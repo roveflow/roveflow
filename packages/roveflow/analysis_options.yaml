@@ -1,0 +1,5 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    - lib/src/bundled_templates.g.dart
