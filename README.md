@@ -43,7 +43,7 @@ roveflow init
 #  - fill in docs/roveflow/scenarios.md
 flutter run -d <simulator-id>
 # Then, in Claude Code:
-/smoke-test --only=cold-setup
+/roveflow --only=cold-setup
 ```
 
 Full walkthrough:
@@ -55,7 +55,7 @@ Full walkthrough:
   counter, dogfooded with `roveflow init`.
 - [`examples/nav_app`](examples/nav_app/) — two-screen navigation demo.
 
-Run either against a local simulator and try `/smoke-test` in Claude Code.
+Run either against a local simulator and try `/roveflow` in Claude Code.
 
 ## Docs & references
 

@@ -66,7 +66,7 @@ You'll need to edit `.mcp.json` after init to point the
 Once a simulator is booted and the app reaches the counter screen:
 
 ```
-/smoke-test --only=cold-setup
+/roveflow --only=cold-setup
 ```
 
 in Claude Code. The orchestrator will dispatch a `roveflow-runner` and

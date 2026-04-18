@@ -35,8 +35,8 @@ regenerated. Same split applies here.
 ## Run the smoke test
 
 ```
-/smoke-test --only=cold-setup          # just the critical path
-/smoke-test --mode=all                 # all three scenarios
+/roveflow --only=cold-setup          # just the critical path
+/roveflow --mode=all                 # all three scenarios
 ```
 
 in Claude Code (simulator must be booted with the app running).

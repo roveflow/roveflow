@@ -1,6 +1,6 @@
 # Scenario File Format
 
-Smoke test scenarios live in `docs/smoke-testing/scenarios.md` in the consuming
+Smoke test scenarios live in `docs/roveflow/scenarios.md` in the consuming
 project. Each scenario is a YAML-fenced block under a `## <id>` heading.
 
 ## Field reference
