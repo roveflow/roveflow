@@ -1,0 +1,59 @@
+{
+  "name": "roveflow",
+  "version": "0.2.0",
+  "description": "Clone any app's UX. Point Roveflow at any iPhone or Android app and it auto-maps every screen and user journey into a designer-ready Atlas.",
+  "type": "module",
+  "bin": {
+    "roveflow": "./bin/roveflow.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "rove": "tsx src/cli.ts",
+    "setup": "tsx src/cli.ts setup"
+  },
+  "keywords": [
+    "app-cloning",
+    "ux",
+    "competitor-analysis",
+    "screen-map",
+    "user-flows",
+    "ios",
+    "android",
+    "ios-automation",
+    "android-automation",
+    "webdriveragent",
+    "go-ios",
+    "adb",
+    "figma",
+    "autopilot",
+    "claude-code"
+  ],
+  "author": "Habib Mohammed <habib@whalestechnology.com>",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "tsx": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roveflow/roveflow.git",
+    "directory": "packages/roveflow"
+  },
+  "homepage": "https://roveflow.dev",
+  "bugs": {
+    "url": "https://github.com/roveflow/roveflow/issues"
+  }
+}

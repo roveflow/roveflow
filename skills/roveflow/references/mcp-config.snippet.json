@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "flutter-inspector": {
-      "command": "${ROVEFLOW_FLUTTER_INSPECTOR}",
-      "args": ["--dart-vm-port=8181", "--resources", "--images"]
-    }
-  }
-}

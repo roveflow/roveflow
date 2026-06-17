@@ -1,5 +1,0 @@
-tags:
-  e2e:
-    # Slow (30-90s) — skipped by default. Opt in with:
-    #   dart test --tags=e2e --run-skipped
-    skip: "use --tags=e2e --run-skipped to run slow end-to-end tests"

@@ -1,70 +1,43 @@
 # Roveflow
 
-> *Your suite checks the flows you already know work. Ours finds the ones
-> you didn't.*
+> **Clone any app in seconds.**
 
-Roveflow is an open-source E2E test orchestration framework for Flutter.
-You describe **what** should happen in a short YAML scenario; an AI
-sub-agent figures out **how** to make it happen in the live app.
-Scenarios stay resilient when copy, layout, or structure changes.
+Plug in your phone. Roveflow's AI taps through any app like a real person and maps
+**every screen and every user journey** for you — then hands you the whole thing,
+ready for your team to rebuild or make better.
 
-**v0.1** ships smoke mode and the CLI installer. Concepts, full docs, and
-the roadmap live at [docs.roveflow.dev](https://docs.roveflow.dev).
+Works on any app on your phone, even ones that aren't yours. Great for studying a
+competitor and shipping a better version.
 
-## Prerequisites
+## How it works
 
-- **Dart 3.3.0+** (Flutter 3.19+ bundles a compatible Dart).
-- A **Flutter project** you can run in debug mode on a simulator.
-- The **`flutter_inspector_mcp`** binary built locally — the runtime
-  bridge the agent uses to drive the live app. See the
-  [installation guide](https://docs.roveflow.dev/getting-started/installation).
+1. **Plug in your phone.**
+2. **Pick an app** and tell Roveflow to explore it.
+3. **Get the map** — every screen, the paths users take between them, and a short
+   video of each flow — in one page you can click through and share.
 
-## Install
+That's it. The AI does the tapping and figuring-out; you get the blueprint.
 
-```bash
-dart pub global activate roveflow
-roveflow version
-```
-
-If `roveflow` isn't on `PATH`, add Dart's pub-cache `bin/` to your shell:
+## Get started
 
 ```bash
-export PATH="$PATH:$HOME/.pub-cache/bin"
+npm install -g roveflow
+roveflow setup
 ```
 
-## Quickstart
+`roveflow setup` gets your phone ready in one step. You'll tap **Allow** once on
+your Mac and type your phone passcode once — nothing else to configure.
 
-```bash
-cd my_flutter_app
-roveflow init
-# Follow the printed next-steps:
-#  - add the one-line registration to main.dart
-#  - point .mcp.json at your flutter-inspector binary
-#  - fill in docs/roveflow/scenarios.md
-flutter run -d <simulator-id>
-# Then, in Claude Code:
-/roveflow --only=cold-setup
+Then just ask:
+
+```
+/rove   map this app — sign-up, the main thing it does, and settings
 ```
 
-Full walkthrough:
-[docs.roveflow.dev/getting-started/quickstart](https://docs.roveflow.dev/getting-started/quickstart).
+Roveflow explores on its own and saves the map to `roveflow-out` — open it in your
+browser and send it to your designers.
 
-## Examples
-
-- [`examples/counter_app`](examples/counter_app/) — default Flutter
-  counter, dogfooded with `roveflow init`.
-- [`examples/nav_app`](examples/nav_app/) — two-screen navigation demo.
-
-Run either against a local simulator and try `/roveflow` in Claude Code.
-
-## Docs & references
-
-- [**Docs site**](https://docs.roveflow.dev) — full user docs, concepts,
-  guides, reference.
-- [**Skill reference**](skills/roveflow/SKILL.md) — how the orchestration
-  engine works under Claude Code.
-- [**CLI reference**](packages/roveflow/README.md) — every command and
-  flag.
+Full guide: [docs.roveflow.dev](https://docs.roveflow.dev).
 
 ## License
 
