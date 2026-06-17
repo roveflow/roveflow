@@ -39,6 +39,88 @@ export function makeVideos(outDir: string): void {
   }
 }
 
+// Layered DAG layout (Sugiyama-lite): rank by longest path, order + position
+// each rank by barycenter of neighbours to reduce edge crossings. Self-contained,
+// deterministic — no graph library, so the atlas stays a single offline HTML file.
+const NODE_W = 120, COL_GAP = 46, ROW_H = 384, NODE_BODY_H = 298, PAD = 56;
+type Layout = {
+  ids: string[]; rank: Map<string, number>; x: Map<string, number>;
+  indeg: Map<string, number>; edges: { from: string; to: string; journeys: Set<number> }[];
+  gw: number; gh: number;
+};
+function layoutGraph(m: Manifest, present: Set<string>): Layout {
+  const sep = "";
+  const edgeMap = new Map<string, { from: string; to: string; journeys: Set<number> }>();
+  const nodeIds: string[] = [];
+  const seen = new Set<string>();
+  m.journeys.forEach((j, ji) => {
+    const f = j.flow.filter((id) => present.has(id));
+    f.forEach((id, k) => {
+      if (!seen.has(id)) { seen.add(id); nodeIds.push(id); }
+      if (k && f[k - 1] !== id) {
+        const key = f[k - 1] + sep + id;
+        let e = edgeMap.get(key);
+        if (!e) { e = { from: f[k - 1], to: id, journeys: new Set() }; edgeMap.set(key, e); }
+        e.journeys.add(ji);
+      }
+    });
+  });
+  const edges = [...edgeMap.values()];
+  const outAdj = new Map<string, string[]>(), inAdj = new Map<string, string[]>();
+  nodeIds.forEach((id) => { outAdj.set(id, []); inAdj.set(id, []); });
+  for (const e of edges) { outAdj.get(e.from)!.push(e.to); inAdj.get(e.to)!.push(e.from); }
+  const indeg = new Map(nodeIds.map((id) => [id, inAdj.get(id)!.length]));
+
+  // rank = longest path from a source; relax with an iteration cap so cycles terminate.
+  const rank = new Map(nodeIds.map((id) => [id, 0]));
+  for (let i = 0; i < nodeIds.length; i++) {
+    let changed = false;
+    for (const e of edges) {
+      const r = rank.get(e.from)! + 1;
+      if (r > rank.get(e.to)!) { rank.set(e.to, r); changed = true; }
+    }
+    if (!changed) break;
+  }
+  const maxRank = Math.max(0, ...nodeIds.map((id) => rank.get(id)!));
+  const ranks: string[][] = Array.from({ length: maxRank + 1 }, () => []);
+  nodeIds.forEach((id) => ranks[rank.get(id)!].push(id));
+
+  // x via a tidy spanning tree: leaves take sequential slots, parents centre
+  // over their children. Compact and centred by construction — no drift.
+  const COL = NODE_W + COL_GAP;
+  const rootList = nodeIds.filter((id) => indeg.get(id) === 0);
+  if (!rootList.length && nodeIds.length) rootList.push(nodeIds[0]);
+  const treeKids = new Map<string, string[]>(nodeIds.map((id) => [id, []]));
+  const placed = new Set<string>(rootList);
+  const queue = [...rootList];
+  while (queue.length) {
+    const u = queue.shift()!;
+    for (const v of outAdj.get(u)!) if (!placed.has(v)) { placed.add(v); treeKids.get(u)!.push(v); queue.push(v); }
+  }
+  for (const id of nodeIds) if (!placed.has(id)) {        // nodes only reachable through a cycle
+    const p = inAdj.get(id)!.find((n) => placed.has(n)) ?? rootList[0];
+    if (p) treeKids.get(p)!.push(id);
+    placed.add(id);
+  }
+  const x = new Map<string, number>();
+  let cursor = 0;
+  const assign = (u: string) => {
+    const ch = treeKids.get(u)!;
+    if (!ch.length) { x.set(u, cursor); cursor += COL; return; }
+    ch.forEach(assign);
+    x.set(u, (x.get(ch[0])! + x.get(ch[ch.length - 1])!) / 2);
+  };
+  rootList.forEach((r) => { assign(r); cursor += COL; });
+  for (const r of ranks) {                                // keep same-rank nodes from overlapping
+    r.sort((a, b) => x.get(a)! - x.get(b)!);
+    for (let i = 1; i < r.length; i++) { const min = x.get(r[i - 1])! + COL; if (x.get(r[i])! < min) x.set(r[i], min); }
+  }
+  const minX = Math.min(0, ...nodeIds.map((id) => x.get(id)!));
+  nodeIds.forEach((id) => x.set(id, x.get(id)! - minX));
+  const maxX = Math.max(0, ...nodeIds.map((id) => x.get(id)!));
+  return { ids: nodeIds, rank, x, indeg, edges, gw: maxX + NODE_W + PAD * 2, gh: maxRank * ROW_H + NODE_BODY_H + PAD * 2 };
+}
+
 export function buildAtlas(outDir: string): { html: string; screens: number; paths: number; steps: number } {
   const m: Manifest = JSON.parse(readFileSync(path.join(outDir, "journeys.json"), "utf8"));
   const nScreens = Object.keys(m.screens).length;
@@ -46,18 +128,33 @@ export function buildAtlas(outDir: string): { html: string; screens: number; pat
   const nSteps = m.journeys.reduce((a, j) => a + j.flow.length, 0);
   const color = (c: string) => CAT_COLORS[c] ?? ACCENT;
 
-  const node = (id: string) => {
-    const s = m.screens[id]; if (!s) return "";
-    return `<div class="node"><div class="phone"><img class="zoom" loading="lazy" src="screens/${esc(id)}.png" alt="${esc(s.title)}"></div>
-      <div class="ntitle">${esc(s.title)}</div><div class="ncap">${esc(s.caption)}</div></div>`;
-  };
-  const lane = (j: Journey, i: number) => {
-    const nodes = j.flow.map((id, k) => (k ? '<div class="arrow">&#8594;</div>' : "") + node(id)).join("");
-    return `<section class="lane" id="lane-${i}"><div class="lane-head">
-      <span class="badge" style="--c:${color(j.category)}">${esc(j.category)}</span><h2>${esc(j.title)}</h2>
-      <span class="lane-count">${j.flow.length} screens</span></div>
-      <p class="lane-desc">${esc(j.description)}</p><div class="flow">${nodes}</div></section>`;
-  };
+  // --- Map: layered node graph (Revyl-style) ---
+  const present = new Set(Object.keys(m.screens));
+  const L = layoutGraph(m, present);
+  const nodeJourneys = new Map<string, Set<number>>();
+  m.journeys.forEach((j, ji) => j.flow.forEach((id) => {
+    if (present.has(id)) (nodeJourneys.get(id) ?? nodeJourneys.set(id, new Set()).get(id)!).add(ji);
+  }));
+  const cx = (id: string) => PAD + L.x.get(id)! + NODE_W / 2;
+  const topY = (id: string) => PAD + L.rank.get(id)! * ROW_H;
+  const botY = (id: string) => topY(id) + NODE_BODY_H;
+  const edgesSvg = L.edges.map((e) => {
+    const x1 = cx(e.from), y1 = botY(e.from), x2 = cx(e.to), y2 = topY(e.to);
+    const dy = Math.max(40, (y2 - y1) * 0.5);
+    const dj = [...e.journeys].sort((a, b) => a - b).join(",");
+    return `<path class="gedge" data-j="${dj}" d="M ${x1} ${y1} C ${x1} ${(y1 + dy).toFixed(1)} ${x2} ${(y2 - dy).toFixed(1)} ${x2} ${y2}"/>`;
+  }).join("");
+  const gnodes = L.ids.map((id) => {
+    const s = m.screens[id];
+    const dj = [...(nodeJourneys.get(id) ?? [])].sort((a, b) => a - b).join(",");
+    return `<div class="gnode" data-j="${dj}" style="left:${PAD + L.x.get(id)!}px;top:${topY(id)}px">
+      <div class="glabel">${esc(s.title)}</div>
+      <div class="phone"><img class="zoom" loading="lazy" src="screens/${esc(id)}.png" alt="${esc(s.title)}"></div></div>`;
+  }).join("");
+  const startPills = L.ids.filter((id) => L.indeg.get(id) === 0)
+    .map((id) => `<div class="gstart" style="left:${cx(id)}px;top:${topY(id) - 26}px">Start</div>`).join("");
+  const graph = `<svg class="gedges" width="${L.gw}" height="${L.gh}" viewBox="0 0 ${L.gw} ${L.gh}">${edgesSvg}</svg>${startPills}${gnodes}`;
+
   const card = (j: Journey, i: number) => `<button class="jcard" data-lane="${i}">
       <div class="jcard-top"><span class="badge sm" style="--c:${color(j.category)}">${esc(j.category)}</span>
       <span class="jcount">${j.flow.length} screens</span></div>
@@ -92,13 +189,25 @@ header{display:flex;align-items:center;gap:16px;padding:0 18px;height:54px;borde
 .jtitle{font-weight:600;margin-bottom:3px}.jdesc{color:var(--mut);font-size:12px}
 .badge{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--c);border:1px solid color-mix(in srgb,var(--c) 45%,transparent);background:color-mix(in srgb,var(--c) 12%,transparent);border-radius:5px;padding:2px 7px}.badge.sm{font-size:10px}
 .canvas{flex:1;overflow:auto;padding:26px 30px 80px;background:radial-gradient(circle at 1px 1px,#18181a 1px,transparent 0) 0 0/26px 26px var(--bg)}
-.lane{margin-bottom:40px;padding:18px;border:1px solid var(--bd);border-radius:14px;background:rgba(22,22,23,.55)}.lane.dim{opacity:.35}
-.lane-head{display:flex;align-items:center;gap:12px}.lane-head h2{font-size:16px;margin:0}.lane-count{margin-left:auto}.lane-desc{color:var(--mut);margin:6px 0 16px;max-width:760px}
-.flow{display:flex;align-items:flex-start;gap:6px;overflow-x:auto;padding-bottom:8px}.node{flex:0 0 auto;width:158px}
-.phone{width:158px;aspect-ratio:1206/2622;border-radius:16px;overflow:hidden;border:1px solid var(--bd);background:#000;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.phone{aspect-ratio:1206/2622;border-radius:16px;overflow:hidden;border:1px solid var(--bd);background:#000;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .phone img{width:100%;height:100%;object-fit:cover;display:block}.ntitle{font-weight:600;font-size:12.5px;margin-top:9px}.ncap{color:var(--mut);font-size:11px}
-.arrow{flex:0 0 auto;align-self:center;color:#4a4a4e;font-size:22px;margin-top:-26px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:24px}.gcell .phone{width:100%}.hidden{display:none}
+/* Map: layered node graph */
+#view-map{flex:1;position:relative;overflow:hidden;padding:0;cursor:grab;touch-action:none;background:radial-gradient(circle at 1px 1px,#161618 1px,transparent 0) 0 0/26px 26px var(--bg)}
+#view-map.grabbing{cursor:grabbing}
+#graphpan{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+.gedges{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}
+.gedge{fill:none;stroke:#3b3b3e;stroke-width:1.6;transition:stroke .15s,stroke-width .15s}
+.dimmed .gedge{stroke:#202022}.gedge.hot{stroke:var(--acc);stroke-width:2.6}
+.gnode{position:absolute;width:120px;display:flex;flex-direction:column;align-items:center;transition:opacity .15s}
+.gnode .phone{width:120px}
+.glabel{font-size:11px;font-weight:600;line-height:1.2;text-align:center;height:28px;overflow:hidden;margin-bottom:7px;color:var(--tx);word-break:break-word}
+.dimmed .gnode{opacity:.26}.gnode.hot{opacity:1}.gnode.hot .phone{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc),0 10px 28px rgba(0,0,0,.55)}
+.gstart{position:absolute;transform:translateX(-50%);font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#0b0b0c;background:var(--acc);border-radius:20px;padding:3px 10px;white-space:nowrap}
+.gcontrols{position:absolute;left:16px;bottom:16px;display:flex;flex-direction:column;gap:7px;z-index:5}
+.gcontrols button{width:34px;height:34px;border-radius:9px;border:1px solid var(--bd);background:var(--panel2);color:var(--tx);font-size:17px;line-height:1;cursor:pointer}
+.gcontrols button:hover{border-color:#3a3a3d;color:var(--acc)}
+.ghint{position:absolute;right:16px;bottom:15px;color:var(--mut);font-size:11px;z-index:5;pointer-events:none}
 footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padding:9px 18px;color:var(--mut);font-size:12px;display:flex;gap:8px;align-items:center}footer b{color:var(--acc);font-weight:600}
 .report{max-width:720px}.report h3{margin:22px 0 8px}
 .recordings{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:22px}
@@ -112,7 +221,9 @@ footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padd
 <div class="stats"><div class="stat"><b>${nScreens}</b><span>Screens</span></div><div class="stat"><b>${nPaths}</b><span>Paths</span></div><div class="stat"><b>${nSteps}</b><span>Steps</span></div></div></header>
 <div class="main"><aside><div class="aside-h">User Journeys</div><div class="aside-sub">${nPaths} paths · ${esc(m.subtitle)}</div>
 ${m.journeys.map(card).join("")}</aside>
-<div class="canvas" id="view-map">${m.journeys.map(lane).join("")}</div>
+<div id="view-map"><div id="graphpan">${graph}</div>
+<div class="gcontrols"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">&minus;</button><button id="zfit" title="Fit to screen">&#9974;</button></div>
+<div class="ghint">scroll to zoom · drag to pan · click a journey to trace it</div></div>
 <div class="canvas hidden" id="view-screens"><div class="grid">${grid}</div></div>
 <div class="canvas hidden" id="view-report"><div class="report"><h2>${esc(m.app)} — UX map</h2>
 <p style="color:var(--mut)">Captured live from a physical iPhone by roving the App Store build via WebDriverAgent, then assembled into this flow map. ${nScreens} unique screens across ${nPaths} user journeys.</p></div>
@@ -121,9 +232,33 @@ ${m.journeys.map(card).join("")}</aside>
 <footer>Mapped by <b>Roveflow</b> <span class="sep">·</span> ${esc(m.app)} ${esc(m.platform)} <span class="sep">·</span> ${nScreens} screens, captured from physical device</footer></div>
 <script>
 const tabs=[...document.querySelectorAll('.tab')],views={map:'view-map',screens:'view-screens',report:'view-report'};
-tabs.forEach(t=>t.onclick=()=>{tabs.forEach(x=>x.classList.remove('active'));t.classList.add('active');for(const k in views)document.getElementById(views[k]).classList.toggle('hidden',k!==t.dataset.view)});
-const cards=[...document.querySelectorAll('.jcard')];
-cards.forEach(c=>c.onclick=()=>{const a=c.classList.contains('active');cards.forEach(x=>x.classList.remove('active'));document.querySelectorAll('.lane').forEach(l=>l.classList.remove('dim'));if(!a){c.classList.add('active');document.querySelectorAll('.lane').forEach(l=>{if(l.id!=='lane-'+c.dataset.lane)l.classList.add('dim')});document.getElementById('lane-'+c.dataset.lane).scrollIntoView({behavior:'smooth',block:'start'})}});
+tabs.forEach(t=>t.onclick=()=>{tabs.forEach(x=>x.classList.remove('active'));t.classList.add('active');for(const k in views)document.getElementById(views[k]).classList.toggle('hidden',k!==t.dataset.view);if(t.dataset.view==='map'&&window.__fit)window.__fit()});
+
+// --- graph pan / zoom ---
+const pane=document.getElementById('view-map'),pan=document.getElementById('graphpan');
+const GW=${L.gw},GH=${L.gh};let s=1,tx=0,ty=0;
+const apply=()=>pan.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
+const clampS=v=>Math.max(0.08,Math.min(2.5,v));
+function fit(){const r=pane.getBoundingClientRect();if(!r.width)return;s=clampS(Math.min(r.width/GW,r.height/GH)*0.92);tx=(r.width-GW*s)/2;ty=Math.max(8,(r.height-GH*s)/2);apply();}
+function zoomAt(px,py,ns){ns=clampS(ns);const r=pane.getBoundingClientRect();const gx=(px-r.left-tx)/s,gy=(py-r.top-ty)/s;s=ns;tx=px-r.left-gx*s;ty=py-r.top-gy*s;apply();}
+pane.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.clientX,e.clientY,s*(e.deltaY<0?1.12:0.89));},{passive:false});
+let drag=null;
+pane.addEventListener('pointerdown',e=>{if(e.target.classList.contains('zoom'))return;drag={x:e.clientX,y:e.clientY,tx,ty};pane.classList.add('grabbing');pane.setPointerCapture(e.pointerId);});
+pane.addEventListener('pointermove',e=>{if(!drag)return;tx=drag.tx+(e.clientX-drag.x);ty=drag.ty+(e.clientY-drag.y);apply();});
+const endDrag=()=>{drag=null;pane.classList.remove('grabbing');};
+pane.addEventListener('pointerup',endDrag);pane.addEventListener('pointercancel',endDrag);
+const ctr=()=>{const r=pane.getBoundingClientRect();return[r.left+r.width/2,r.top+r.height/2];};
+document.getElementById('zin').onclick=()=>{const[a,b]=ctr();zoomAt(a,b,s*1.25);};
+document.getElementById('zout').onclick=()=>{const[a,b]=ctr();zoomAt(a,b,s*0.8);};
+document.getElementById('zfit').onclick=fit;
+window.__fit=fit;window.addEventListener('resize',()=>{if(!document.getElementById('view-map').classList.contains('hidden'))fit();});
+requestAnimationFrame(fit);
+
+// --- journey highlight ---
+const cards=[...document.querySelectorAll('.jcard')],gnodes=[...document.querySelectorAll('.gnode')],gedges=[...document.querySelectorAll('.gedge')];
+const inJ=(el,ji)=>(el.dataset.j||'').split(',').indexOf(ji)>=0;
+function clearHi(){pane.classList.remove('dimmed');gnodes.forEach(n=>n.classList.remove('hot'));gedges.forEach(e=>e.classList.remove('hot'));}
+cards.forEach(c=>c.onclick=()=>{const a=c.classList.contains('active');cards.forEach(x=>x.classList.remove('active'));if(a){clearHi();return;}c.classList.add('active');const ji=c.dataset.lane;pane.classList.add('dimmed');gnodes.forEach(n=>n.classList.toggle('hot',inJ(n,ji)));gedges.forEach(e=>e.classList.toggle('hot',inJ(e,ji)));});
 const lb=document.getElementById('lightbox'),lbi=document.getElementById('lightbox-img');
 document.addEventListener('click',e=>{if(e.target.classList&&e.target.classList.contains('zoom')){lbi.src=e.target.src;lb.classList.add('show')}else if(e.target.id==='lightbox'||e.target.id==='lightbox-x'){lb.classList.remove('show');lbi.src=''}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){lb.classList.remove('show');lbi.src=''}});
