@@ -6,13 +6,13 @@ import path from "node:path";
 import * as d from "./device.js";
 import { setup, doctor } from "./setup.js";
 import { buildAtlas, makeVideos } from "./atlas.js";
-import { uninstall, keygen, installWda } from "./signing.js";
+import { uninstall, keygen, installWda, exportWda } from "./signing.js";
 
 const OUT = process.env.ROVEFLOW_OUT ?? path.resolve("roveflow-out");
 const SCREENS = path.join(OUT, "screens");
 
 const program = new Command();
-program.name("roveflow").description("Autopilot UX mapper for physical iPhone + Android apps — driven by Claude Code").version("0.1.0");
+program.name("roveflow").description("Autopilot UX mapper for physical iPhone + Android apps — driven by Claude Code").version("0.2.1");
 
 // ---- lifecycle ----
 program.command("setup").description("Install deps + bring up tunnel/WDA/forward (one command)")
@@ -20,6 +20,16 @@ program.command("setup").description("Install deps + bring up tunnel/WDA/forward
 program.command("doctor").description("Health-check the device pipeline").action(async () => { process.exit((await doctor()) ? 0 : 1); });
 program.command("keygen").description("Find your signing profile + print the one command to make the signing key").action(keygen);
 program.command("install-wda").description("Sign + install WebDriverAgent on the device (needs keygen first)").action(() => installWda());
+program.command("export-wda").description("Export a WebDriverAgent.ipa to sign with Sideloadly/AltStore (free Apple ID, no Xcode)")
+  .action(() => {
+    const ipa = exportWda();
+    console.log("WebDriverAgent.ipa exported:\n  " + ipa + "\n");
+    console.log("Sign it with a free Apple ID — no Xcode:");
+    console.log("  1. Install Sideloadly (https://sideloadly.io) or AltStore.");
+    console.log("  2. Open it, drag in the .ipa above, enter your Apple ID, click Start.");
+    console.log("  3. Enter the 2FA code, then unlock the iPhone and tap Trust.");
+    console.log("  4. Back here, run `roveflow setup` — it auto-detects the signed app.");
+  });
 program.command("uninstall").description("Stop processes + remove WDA from device + delete signing artifacts").action(() => uninstall());
 program.command("devices").description("List the connected phone + installed apps").action(() => {
   console.log("platform:", d.platform());

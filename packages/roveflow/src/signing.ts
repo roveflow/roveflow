@@ -58,8 +58,33 @@ export function findProfile(): { path: string; appId: string; cn: string } | nul
   return cands[0] ?? null;
 }
 
+/** Find any installed WebDriverAgent runner, whoever signed it (Roveflow's own
+ *  signing keeps Facebook's id; a Sideloadly/AltStore free-sign uses the user's
+ *  team, e.g. com.<them>.WebDriverAgentRunner.xctrunner). Returns the bundle id. */
+export function detectInstalledWda(): string | null {
+  const out = ios(["apps", "--list"], { quiet: true });
+  const m = out.match(/[\w.-]*WebDriverAgentRunner[\w.-]*xctrunner/i);
+  return m ? m[0] : null;
+}
+
 export function wdaInstalled(): boolean {
-  return ios(["apps", "--list"], { quiet: true }).includes(WDA_BUNDLE);
+  return detectInstalledWda() !== null;
+}
+
+/** Package the prebuilt WDA runner as an unsigned .ipa that the user can sign
+ *  with Sideloadly / AltStore (free Apple ID) — no Xcode, no Roveflow ever
+ *  touching their password. Returns the .ipa path. */
+export function exportWda(): string {
+  const appPath = downloadWdaApp();
+  mkdirSync(OUT, { recursive: true });
+  const work = path.join(OUT, "wda-export");
+  execSync(`rm -rf ${JSON.stringify(work)} && mkdir -p ${JSON.stringify(path.join(work, "Payload"))}`);
+  execSync(`cp -R ${JSON.stringify(appPath)} ${JSON.stringify(path.join(work, "Payload") + "/")}`);
+  // strip debug symbols (Roveflow's own signer drops these too)
+  execSync(`find ${JSON.stringify(path.join(work, "Payload"))} -name "*.dSYM" -prune -exec rm -rf {} +`);
+  const ipa = path.join(OUT, "WebDriverAgent.ipa");
+  execSync(`rm -f ${JSON.stringify(ipa)} && cd ${JSON.stringify(work)} && zip -qry ${JSON.stringify(ipa)} Payload`);
+  return ipa;
 }
 
 export function uninstall(opts: { full?: boolean } = {}): void {
@@ -68,18 +93,19 @@ export function uninstall(opts: { full?: boolean } = {}): void {
     try { execSync(`pkill -f ${JSON.stringify(p)}`, { stdio: "ignore" }); } catch { /* */ }
   }
   console.log("• stopped tunnel / WDA / forward");
-  if (wdaInstalled()) { ios(["uninstall", WDA_BUNDLE], { quiet: true }); console.log(`• uninstalled ${WDA_BUNDLE} from device`); }
-  else console.log(`• ${WDA_BUNDLE} was not installed`);
+  const installed = detectInstalledWda();
+  if (installed) { ios(["uninstall", installed], { quiet: true }); console.log(`• uninstalled ${installed} from device`); }
+  else console.log("• WebDriverAgent was not installed");
   for (const f of [P12, PROFILE, path.join(OUT, "_all-identities.p12")]) if (existsSync(f)) { execSync(`rm -f ${JSON.stringify(f)}`); console.log(`• removed ${path.basename(f)}`); }
   console.log("✓ uninstalled.");
 }
 
 const NEW_DEV_HELP =
-  "No development profile includes this iPhone yet (one-time, per Apple's rules).\n" +
-  "  Easiest fix: open Xcode → Settings → Accounts → add your Apple ID (free works),\n" +
-  "  then plug in + select this iPhone and Run any throwaway app to it once. Xcode\n" +
-  "  auto-creates your signing cert, registers the device, and makes a profile.\n" +
-  "  Re-run `roveflow setup` after. (Full `xcodebuild` auto-provisioning is on the roadmap.)";
+  "WebDriverAgent isn't signed for this iPhone yet (one-time, per Apple's rules).\n" +
+  "  Easiest (no Xcode): run `roveflow export-wda`, sign the .ipa with Sideloadly or\n" +
+  "  AltStore using a free Apple ID, then re-run `roveflow setup` (it auto-detects it).\n" +
+  "  Or with Xcode: Settings → Accounts → add your Apple ID → Run a throwaway app to\n" +
+  "  this iPhone once, then re-run `roveflow setup`.";
 
 /** Resolve the codesign identity (SHA-1) for the cert id, e.g. "66NN76CBQ2". */
 function codesignSha1(certId: string): string {

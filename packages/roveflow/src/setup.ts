@@ -2,12 +2,14 @@
 // iOS: userspace tunnel + WebDriverAgent + port-forward (auto-signed).
 // Android: just adb — no signing, no driver to install.
 import { execSync, spawn } from "node:child_process";
-import { mkdirSync, openSync } from "node:fs";
+import { mkdirSync, openSync, copyFileSync, existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as device from "./device.js";
 import * as iosDev from "./ios.js";
 import * as androidDev from "./android.js";
-import { installWda, wdaInstalled } from "./signing.js";
+import { installWda, wdaInstalled, detectInstalledWda } from "./signing.js";
 
 const WDA_BUNDLE = process.env.ROVEFLOW_WDA_BUNDLE ?? "com.facebook.WebDriverAgentRunner.xctrunner";
 const WDA_PORT = Number(process.env.ROVEFLOW_WDA_PORT ?? 12004);
@@ -32,14 +34,17 @@ async function tunnelUp(): Promise<boolean> { return iosDev.ios(["tunnel", "ls"]
 async function bringUpIOS(): Promise<void> {
   mkdirSync(OUT, { recursive: true });
   if (!(await tunnelUp())) {
+    console.log("  ↳ If your iPhone asks, tap “Trust” and enter your passcode. First-time pairing can take ~30s…");
     await step("start userspace tunnel (no sudo)", async () => {
       bg("tunnel", "ios", ["tunnel", "start", "--userspace"]);
-      for (let i = 0; i < 15; i++) { await sleep(1500); if (await tunnelUp()) return; }
-      throw new Error("tunnel did not come up — see roveflow-out/logs/tunnel.log");
+      // First run also waits on the on-device Trust + pairing handshake — give it ~90s.
+      for (let i = 0; i < 60; i++) { await sleep(1500); if (await tunnelUp()) return; }
+      throw new Error("tunnel did not come up after 90s — make sure you tapped Trust on the iPhone. See roveflow-out/logs/tunnel.log");
     });
   }
   if (!wdaInstalled()) await step("install WebDriverAgent (one-time signing)", () => installWda());
-  await step("start WebDriverAgent runner", () => bg("wda", "ios", ["runwda", `--bundleid=${WDA_BUNDLE}`, `--testrunnerbundleid=${WDA_BUNDLE}`, "--xctestconfig=WebDriverAgentRunner.xctest"]));
+  const wdaId = detectInstalledWda() ?? WDA_BUNDLE; // works for Roveflow- or Sideloadly-signed WDA
+  await step("start WebDriverAgent runner", () => bg("wda", "ios", ["runwda", `--bundleid=${wdaId}`, `--testrunnerbundleid=${wdaId}`, "--xctestconfig=WebDriverAgentRunner.xctest"]));
   await step("forward driver port", () => bg("forward", "ios", ["forward", String(WDA_PORT), "8100"]));
   console.log("  ↳ If your iPhone shows “Enter Passcode for XCTest”, enter it now. Waiting for the driver…");
   await step("wait for driver health (up to 2 min)", async () => {
@@ -57,20 +62,26 @@ async function bringUpAndroid(): Promise<void> {
   });
 }
 
+/** Install the /rove skill globally so `/rove` is available in Claude Code. */
+function installRoveSkill(): void {
+  const src = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "skills", "rove", "SKILL.md");
+  if (!existsSync(src)) return; // not bundled in this tree — skip
+  const dest = path.join(os.homedir(), ".claude", "skills", "rove");
+  mkdirSync(dest, { recursive: true });
+  copyFileSync(src, path.join(dest, "SKILL.md"));
+}
+
 export async function setup(): Promise<void> {
   console.log("Roveflow setup\n──────────────");
+  await step("install the /rove skill (~/.claude/skills/rove)", () => installRoveSkill());
   if (!has("ffmpeg") && has("brew")) await step("install ffmpeg", () => sh("brew install ffmpeg"));
   if (!has("ios")) await step("install go-ios", () => sh("npm install -g go-ios"));
 
+  // Pick the platform from what's actually plugged in — never assume.
   let p: device.Platform;
   if (iosDev.detected()) p = "ios";
-  else {
-    if (!has("adb")) await step("install Android platform tools (adb)", () => {
-      if (has("brew")) sh("brew install --cask android-platform-tools");
-      else throw new Error("Install Android platform tools (adb): https://developer.android.com/tools/releases/platform-tools");
-    });
-    p = "android";
-  }
+  else if (has("adb") && androidDev.detected()) p = "android";
+  else throw new Error("No device detected. iPhone: connect via USB, unlock, tap Trust. Android: enable USB debugging, tap Allow. Then retry.");
   process.env.ROVEFLOW_PLATFORM = p; // pin for the rest of the run
   console.log(`Platform: ${p}`);
   if (p === "ios") await bringUpIOS(); else await bringUpAndroid();
