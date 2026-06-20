@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { El } from "./types.js";
+import { slug } from "./types.js";
 
 let _serial: string | null = process.env.ROVEFLOW_UDID ?? null;
 
@@ -49,9 +50,8 @@ export async function pressButton(name: string): Promise<void> { sh(["shell", "i
 export function launch(pkg: string): void { sh(["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"], { quiet: true }); }
 export function stop(pkg: string): void { sh(["shell", "am", "force-stop", pkg], { quiet: true }); }
 export function screenshot(name: string, dir: string): string {
-  const slug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   mkdirSync(dir, { recursive: true });
-  const out = path.join(dir, `${slug}.png`);
+  const out = path.join(dir, `${slug(name)}.png`);
   const buf = execFileSync("adb", ["-s", udid(), "exec-out", "screencap", "-p"], { maxBuffer: 64 * 1024 * 1024 });
   writeFileSync(out, buf); return out;
 }

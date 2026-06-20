@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { slug } from "./types.js";
 
 type Screen = { title: string; caption: string };
 type Journey = { category: string; title: string; description: string; flow: string[] };
@@ -17,7 +18,10 @@ const CAT_COLORS: Record<string, string> = {
 const ACCENT = "#b9f24d";
 
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-export const jslug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+// Screen image filenames go through the SAME slug as capture (see types.ts) so the
+// atlas's `screens/<id>.png` refs resolve regardless of how the id was written in
+// journeys.json ("model_selection" → screens/model-selection.png).
+const img = (id: string) => `screens/${slug(id)}.png`;
 
 export function makeVideos(outDir: string): void {
   const m: Manifest = JSON.parse(readFileSync(path.join(outDir, "journeys.json"), "utf8"));
@@ -26,11 +30,11 @@ export function makeVideos(outDir: string): void {
   mkdirSync(videos, { recursive: true });
   const SECS = 1.5;
   for (const j of m.journeys) {
-    const frames = j.flow.map((s) => path.join(screens, `${s}.png`)).filter(existsSync);
+    const frames = j.flow.map((s) => path.join(screens, `${slug(s)}.png`)).filter(existsSync);
     if (!frames.length) continue;
-    const list = path.join(os.tmpdir(), `rf-${jslug(j.title)}.txt`);
+    const list = path.join(os.tmpdir(), `rf-${slug(j.title)}.txt`);
     writeFileSync(list, frames.map((f) => `file '${f}'\nduration ${SECS}`).join("\n") + `\nfile '${frames.at(-1)}'\n`);
-    const out = path.join(videos, `${jslug(j.title)}.mp4`);
+    const out = path.join(videos, `${slug(j.title)}.mp4`);
     try {
       execFileSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", list,
         "-vf", "scale=560:-2,format=yuv420p", "-r", "30", "-movflags", "+faststart", out], { stdio: "ignore" });
@@ -149,7 +153,7 @@ export function buildAtlas(outDir: string): { html: string; screens: number; pat
     const dj = [...(nodeJourneys.get(id) ?? [])].sort((a, b) => a - b).join(",");
     return `<div class="gnode" data-j="${dj}" style="left:${PAD + L.x.get(id)!}px;top:${topY(id)}px">
       <div class="glabel">${esc(s.title)}</div>
-      <div class="phone"><img class="zoom" loading="lazy" src="screens/${esc(id)}.png" alt="${esc(s.title)}"></div></div>`;
+      <div class="phone"><img class="zoom" loading="lazy" src="${img(id)}" alt="${esc(s.title)}"></div></div>`;
   }).join("");
   const startPills = L.ids.filter((id) => L.indeg.get(id) === 0)
     .map((id) => `<div class="gstart" style="left:${cx(id)}px;top:${topY(id) - 26}px">Start</div>`).join("");
@@ -160,13 +164,13 @@ export function buildAtlas(outDir: string): { html: string; screens: number; pat
       <span class="jcount">${j.flow.length} screens</span></div>
       <div class="jtitle">${esc(j.title)}</div><div class="jdesc">${esc(j.description)}</div></button>`;
   const grid = Object.entries(m.screens).map(([id, s]) =>
-    `<div class="gcell"><div class="phone"><img class="zoom" loading="lazy" src="screens/${esc(id)}.png"></div>
+    `<div class="gcell"><div class="phone"><img class="zoom" loading="lazy" src="${img(id)}"></div>
       <div class="ntitle">${esc(s.title)}</div><div class="ncap">${esc(s.caption)}</div></div>`).join("");
   const recordings = m.journeys.map((j) => `<div class="rec"><div class="rec-head">
       <span class="badge sm" style="--c:${color(j.category)}">${esc(j.category)}</span>
       <span class="jcount">${j.flow.length} screens</span></div><div class="rtitle">${esc(j.title)}</div>
-      <video controls preload="metadata" playsinline poster="screens/${esc(j.flow[0])}.png">
-      <source src="videos/${jslug(j.title)}.mp4" type="video/mp4"></video>
+      <video controls preload="metadata" playsinline poster="${img(j.flow[0])}">
+      <source src="videos/${slug(j.title)}.mp4" type="video/mp4"></video>
       <div class="rdesc">${esc(j.description)}</div></div>`).join("");
 
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">

@@ -63,8 +63,13 @@ export function findProfile(): { path: string; appId: string; cn: string } | nul
  *  team, e.g. com.<them>.WebDriverAgentRunner.xctrunner). Returns the bundle id. */
 export function detectInstalledWda(): string | null {
   const out = ios(["apps", "--list"], { quiet: true });
-  const m = out.match(/[\w.-]*WebDriverAgentRunner[\w.-]*xctrunner/i);
-  return m ? m[0] : null;
+  // bundle id is the first token on each line; a free/AltServer sign appends the
+  // team id (…xctrunner.TEAMID), so prefer the longest (most-specific) match.
+  const bundles = out.split("\n")
+    .map((l) => l.trim().split(/\s+/)[0])
+    .filter((b) => /WebDriverAgentRunner[\w.-]*xctrunner/i.test(b));
+  if (!bundles.length) return null;
+  return bundles.sort((a, b) => b.length - a.length)[0];
 }
 
 export function wdaInstalled(): boolean {

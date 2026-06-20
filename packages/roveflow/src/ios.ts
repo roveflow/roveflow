@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { El } from "./types.js";
+import { slug } from "./types.js";
 
 const WDA_PORT = Number(process.env.ROVEFLOW_WDA_PORT ?? 12004);
 const BASE = `http://127.0.0.1:${WDA_PORT}`;
@@ -75,9 +76,8 @@ export async function pressButton(name: string): Promise<void> { const sid = awa
 export function launch(bundleId: string): void { ios(["launch", bundleId, "--udid", udid()], { quiet: true }); }
 export function stop(bundleId: string): void { ios(["kill", bundleId, "--udid", udid()], { quiet: true }); }
 export function screenshot(name: string, dir: string): string {
-  const slug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   mkdirSync(dir, { recursive: true });
-  const out = path.join(dir, `${slug}.png`);
+  const out = path.join(dir, `${slug(name)}.png`);
   ios(["screenshot", "--udid", udid(), "--output", out], { quiet: true });
   return out;
 }
