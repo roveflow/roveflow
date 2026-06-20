@@ -87,4 +87,7 @@ program.command("serve").description("Serve the atlas locally").option("-p, --po
   }).listen(+o.port, () => console.log(`Atlas at http://127.0.0.1:${o.port}/atlas.html`));
 });
 
-program.parseAsync();
+// Force node-style argv parsing. Commander otherwise auto-detects `process.versions.electron`
+// (still set when the desktop runs this bundle via ELECTRON_RUN_AS_NODE) and slices argv like
+// a packaged Electron app would, treating the script path as a stray command.
+program.parseAsync(process.argv, { from: "node" });

@@ -93,9 +93,16 @@ async function bringUpAndroid(): Promise<void> {
   });
 }
 
+/** Dir of this module, working in both ESM (tsx: import.meta.url) and the CJS bundle
+ *  (esbuild leaves import.meta.url undefined there, but __dirname is defined). */
+function moduleDir(): string {
+  try { return path.dirname(fileURLToPath(import.meta.url)); }
+  catch { return __dirname; }
+}
+
 /** Install the /rove skill globally so `/rove` is available in Claude Code. */
 function installRoveSkill(): void {
-  const src = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "skills", "rove", "SKILL.md");
+  const src = path.join(moduleDir(), "..", "skills", "rove", "SKILL.md");
   if (!existsSync(src)) return; // not bundled in this tree — skip
   const dest = path.join(os.homedir(), ".claude", "skills", "rove");
   mkdirSync(dest, { recursive: true });
