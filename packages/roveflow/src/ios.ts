@@ -16,21 +16,28 @@ export function ios(args: string[], opts: { quiet?: boolean } = {}): string {
   catch (e: any) { return e.stdout?.toString() ?? ""; }
 }
 
-export function detected(): boolean {
+/** UDIDs of USB-attached iPhones only. `ios list` also reports Wi-Fi-paired
+ *  devices, which linger after the cable is unplugged and make setup pick iOS
+ *  (and proactively print "tap Trust") with nothing actually plugged in.
+ *  `--detail` exposes ConnectionType so we can keep only the USB ones. */
+function usbUdids(): string[] {
   try {
-    const out = ios(["list"], { quiet: true });
+    const out = ios(["list", "--detail"], { quiet: true });
     const j = JSON.parse(out.split("\n").find((l) => l.includes("deviceList")) ?? out);
-    return (j.deviceList?.length ?? 0) > 0;
-  } catch { return false; }
+    return (j.deviceList ?? [])
+      .filter((d: any) => String(d?.ConnectionType ?? "").toUpperCase() === "USB")
+      .map((d: any) => d?.Udid)
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+export function detected(): boolean {
+  return usbUdids().length > 0;
 }
 
 export function udid(): string {
   if (_udid) return _udid;
-  try {
-    const out = ios(["list"], { quiet: true });
-    const j = JSON.parse(out.split("\n").find((l) => l.includes("deviceList")) ?? out);
-    _udid = j.deviceList?.[0] ?? null;
-  } catch { /* */ }
+  _udid = usbUdids()[0] ?? null;
   if (!_udid) throw new Error("No iPhone found. Connect it (USB, unlocked) and run `roveflow setup`.");
   return _udid;
 }

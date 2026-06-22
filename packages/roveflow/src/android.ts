@@ -17,12 +17,15 @@ function deviceList(): { serial: string; state: string }[] {
   return adb(["devices"], { quiet: true }).split("\n").slice(1).map((l) => l.trim()).filter(Boolean)
     .map((l) => { const [serial, state] = l.split(/\s+/); return { serial, state }; }).filter((d) => d.serial);
 }
-export function detected(): boolean { try { return deviceList().some((d) => d.state === "device"); } catch { return false; } }
+/** A USB-attached device. Network adb (`adb connect`) shows up as an `ip:port`
+ *  serial; we treat only cable-attached devices as connected, mirroring iOS. */
+const isUsb = (serial: string) => !serial.includes(":");
+export function detected(): boolean { try { return deviceList().some((d) => d.state === "device" && isUsb(d.serial)); } catch { return false; } }
 
 export function udid(): string {
   if (_serial) return _serial;
   const list = deviceList();
-  const ready = list.find((d) => d.state === "device");
+  const ready = list.find((d) => d.state === "device" && isUsb(d.serial));
   if (!ready) {
     if (list.some((d) => d.state === "unauthorized")) throw new Error("Android phone is unauthorized — tap “Allow USB debugging” on the phone, then retry.");
     throw new Error("No Android device. Enable USB debugging, plug in via USB, and run `roveflow setup`.");

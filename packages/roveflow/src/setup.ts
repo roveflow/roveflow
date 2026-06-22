@@ -58,21 +58,33 @@ async function tunnelHealthy(): Promise<boolean> {
   return p != null && (await portOpen(p));
 }
 
-async function bringUpIOS(): Promise<void> {
-  mkdirSync(OUT, { recursive: true });
-  if (!(await tunnelHealthy())) {
-    // Clear any stale/dead tunnel (registered but not serving) before starting fresh.
-    try { execSync("pkill -f 'ios tunnel start'", { stdio: "ignore" }); } catch { /* none running */ }
-    await sleep(500);
-    console.log("  ↳ If your iPhone asks, tap “Trust” and enter your passcode. First-time pairing can take ~30s…");
-    await step("start userspace tunnel (no sudo)", async () => {
-      bg("tunnel", "ios", ["tunnel", "start", "--userspace"]);
-      // First run also waits on the on-device Trust + pairing handshake — give it ~90s.
-      // Wait for the port to ACTUALLY accept connections, not just appear in `tunnel ls`.
-      for (let i = 0; i < 60; i++) { await sleep(1500); if (await tunnelHealthy()) return; }
-      throw new Error("tunnel did not come up after 90s — make sure you tapped Trust on the iPhone. See roveflow-out/logs/tunnel.log");
-    });
-  }
+/** Kill go-ios helpers by name; ignore "nothing matched". */
+function pkill(pattern: string): void {
+  try { execSync(`pkill -f '${pattern}'`, { stdio: "ignore" }); } catch { /* none running */ }
+}
+
+/** (Re)start the userspace tunnel from scratch. We always kill any existing
+ *  tunnel first: a dead-but-listening tunnel passes the portOpen check yet
+ *  refuses to route to the device, so "reuse" is never safe once we've decided
+ *  to rebuild. */
+async function startTunnel(): Promise<void> {
+  pkill("ios tunnel start");
+  await sleep(500);
+  console.log("  ↳ If your iPhone asks, tap “Trust” and enter your passcode. First-time pairing can take ~30s…");
+  await step("start userspace tunnel (no sudo)", async () => {
+    bg("tunnel", "ios", ["tunnel", "start", "--userspace"]);
+    // First run also waits on the on-device Trust + pairing handshake — give it ~90s.
+    // Wait for the port to ACTUALLY accept connections, not just appear in `tunnel ls`.
+    for (let i = 0; i < 60; i++) { await sleep(1500); if (await tunnelHealthy()) return; }
+    throw new Error("tunnel did not come up after 90s — make sure you tapped Trust on the iPhone. See roveflow-out/logs/tunnel.log");
+  });
+}
+
+/** Start WDA + the driver-port forward, then wait for the driver to answer.
+ *  Kills any previous runner/forward first so a retry doesn't stack duplicates. */
+async function startDriver(): Promise<void> {
+  pkill("runwda"); pkill("ios forward");
+  await sleep(300);
   if (!wdaInstalled()) await step("install WebDriverAgent (one-time signing)", () => installWda());
   const wdaId = detectInstalledWda() ?? WDA_BUNDLE; // works for Roveflow- or Sideloadly-signed WDA
   await step("start WebDriverAgent runner", () => bg("wda", "ios", ["runwda", `--bundleid=${wdaId}`, `--testrunnerbundleid=${wdaId}`, "--xctestconfig=WebDriverAgentRunner.xctest"]));
@@ -80,8 +92,25 @@ async function bringUpIOS(): Promise<void> {
   console.log("  ↳ If your iPhone shows “Enter Passcode for XCTest”, enter it now. Waiting for the driver…");
   await step("wait for driver health (up to 2 min)", async () => {
     for (let i = 0; i < 80; i++) { await sleep(1500); if (await device.health()) return; }
-    throw new Error("driver never came up — check roveflow-out/logs/wda.log. Usual causes: a stale/dead RSD tunnel (look for 'ConnectUserSpaceTunnel: connection refused' — retry to rebuild it), the on-device passcode prompt, or a locked phone.");
+    throw new Error("driver never came up — check roveflow-out/logs/wda.log. Usual causes: a stale/dead RSD tunnel (look for 'ConnectUserSpaceTunnel: connection refused'), the on-device passcode prompt, or a locked phone.");
   });
+}
+
+async function bringUpIOS(): Promise<void> {
+  mkdirSync(OUT, { recursive: true });
+  // Fast path: reuse a tunnel that's actually serving. Otherwise build a fresh one.
+  if (!(await tunnelHealthy())) await startTunnel();
+  try {
+    await startDriver();
+  } catch {
+    // The reused tunnel can be dead-but-listening (passes portOpen, but its route
+    // to the device is gone — "connection was refused" in tunnel.log), so WDA can
+    // never init a session. This is the classic "fails on the 2nd run" symptom.
+    // Rebuild the tunnel from scratch and retry the driver once.
+    console.log("  ↳ driver didn’t come up — rebuilding the tunnel and retrying once…");
+    await startTunnel();
+    await startDriver();
+  }
 }
 
 async function bringUpAndroid(): Promise<void> {
