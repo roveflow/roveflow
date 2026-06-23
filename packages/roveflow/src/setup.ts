@@ -2,7 +2,7 @@
 // iOS: userspace tunnel + WebDriverAgent + port-forward (auto-signed).
 // Android: just adb — no signing, no driver to install.
 import { execSync, spawn } from "node:child_process";
-import { mkdirSync, openSync, copyFileSync, existsSync } from "node:fs";
+import { mkdirSync, openSync, copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -151,6 +151,11 @@ export async function setup(): Promise<void> {
   else throw new Error("No device detected. iPhone: connect via USB, unlock, tap Trust. Android: enable USB debugging, tap Allow. Then retry.");
   process.env.ROVEFLOW_PLATFORM = p; // pin for the rest of the run
   console.log(`Platform: ${p}`);
+  // Cache platform + UDID so every later `roveflow` command skips the go-ios probe.
+  try {
+    const id = p === "ios" ? iosDev.udid() : androidDev.udid();
+    writeFileSync(path.join(os.tmpdir(), "roveflow-device.json"), JSON.stringify({ platform: p, udid: id }));
+  } catch { /* cache is best-effort */ }
   if (p === "ios") await bringUpIOS(); else await bringUpAndroid();
   console.log(`\n✓ Ready (${p}). Try:  roveflow screenshot home  |  roveflow doctor  |  /rove in Claude Code`);
 }

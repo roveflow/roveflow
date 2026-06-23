@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { createServer } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import * as d from "./device.js";
 import { setup, doctor } from "./setup.js";
 import { buildAtlas, makeVideos } from "./atlas.js";
@@ -10,6 +11,42 @@ import { uninstall, keygen, installWda, exportWda } from "./signing.js";
 
 const OUT = process.env.ROVEFLOW_OUT ?? path.resolve("roveflow-out");
 const SCREENS = path.join(OUT, "screens");
+const ELEMENTS_CACHE = path.join(OUT, "elements.json");
+const DEVICE_CACHE = path.join(os.tmpdir(), "roveflow-device.json");
+
+// Reuse the platform + UDID that `setup` detected, so routine commands skip the
+// slow go-ios `ios list` probe (the dominant per-command overhead).
+try {
+  const c = JSON.parse(readFileSync(DEVICE_CACHE, "utf8"));
+  if (c.platform && !process.env.ROVEFLOW_PLATFORM) process.env.ROVEFLOW_PLATFORM = c.platform;
+  if (c.udid && !process.env.ROVEFLOW_UDID) process.env.ROVEFLOW_UDID = c.udid;
+} catch { /* no cache yet — detect normally */ }
+
+const SETTLE_MS = Number(process.env.ROVEFLOW_SETTLE_MS ?? 450);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Cache + print the "set of marks". Returns the count. */
+function printElements(els: d.El[]): number {
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(ELEMENTS_CACHE, JSON.stringify(els));
+  if (!els.length) console.log("(no labeled elements — fall back to a screenshot + `tap <x> <y> --px`)");
+  else els.forEach((e, i) => console.log(`[${String(i + 1).padStart(2)}] ${(e.type || "?").padEnd(12)} ${e.label.slice(0, 52)}`));
+  return els.length;
+}
+async function listElements(): Promise<number> { return printElements(await d.elements()); }
+/** One round-trip "observe": screenshot + element list together (fetched in
+ *  parallel), so a drive step is a single CLI call (one model turn) not several. */
+async function look(name: string): Promise<void> {
+  const [shot, els] = await Promise.all([d.screenshot(name, SCREENS), d.elements()]);
+  console.log(shot);
+  printElements(els);
+}
+/** After an action, settle briefly then observe — so act+observe is one call. */
+async function thenLook(name?: string): Promise<void> {
+  if (!name) return;
+  await sleep(SETTLE_MS);
+  await look(name);
+}
 
 const program = new Command();
 program.name("roveflow").description("Autopilot UX mapper for physical iPhone + Android apps — driven by Claude Code").version("0.2.1");
@@ -42,25 +79,49 @@ program.command("launch <bundleId>").description("Launch an installed app").acti
 program.command("stop <bundleId>").action((b) => { d.stop(b); console.log("stopped", b); });
 
 program.command("screenshot <name>").alias("snap").description("Capture current screen -> screens/<name>.png")
-  .action((name) => console.log(d.screenshot(name, SCREENS)));
+  .action(async (name) => console.log(await d.screenshot(name, SCREENS)));
 
 program.command("tap <x> <y>").description("Tap. Add --px to give coordinates read from a screenshot.")
   .option("--px", "treat x/y as screenshot pixels (iOS divides by device scale; Android is 1:1)")
-  .action(async (x, y, o) => { const s = o.px ? d.scale() : 1; await d.tap(+x / s, +y / s); console.log(`tapped ${x},${y}${o.px ? " (px)" : ""}`); });
+  .option("--look <name>", "after tapping, settle + screenshot + list the resulting screen")
+  .action(async (x, y, o) => { const s = o.px ? d.scale() : 1; await d.tap(+x / s, +y / s); console.log(`tapped ${x},${y}${o.px ? " (px)" : ""}`); await thenLook(o.look); });
 
 program.command("swipe <x1> <y1> <x2> <y2>").description("Swipe/drag. Add --px for screenshot pixel coords.")
-  .option("--px", "pixel coords").option("--dur <ms>", "duration ms", "600")
-  .action(async (x1, y1, x2, y2, o) => { const s = o.px ? d.scale() : 1; await d.swipe(+x1 / s, +y1 / s, +x2 / s, +y2 / s, +o.dur); console.log("swiped"); });
+  .option("--px", "pixel coords").option("--dur <ms>", "duration ms", "600").option("--look <name>", "after swiping, settle + screenshot + list the resulting screen")
+  .action(async (x1, y1, x2, y2, o) => { const s = o.px ? d.scale() : 1; await d.swipe(+x1 / s, +y1 / s, +x2 / s, +y2 / s, +o.dur); console.log("swiped"); await thenLook(o.look); });
 
-program.command("type <text>").description("Type into the focused field").action(async (t) => { await d.typeText(t); console.log("typed:", t); });
+program.command("type <text>").description("Type into the focused field").option("--look <name>", "after typing, settle + screenshot + list")
+  .action(async (t, o) => { await d.typeText(t); console.log("typed:", t); await thenLook(o.look); });
 program.command("erase <n>").description("Delete N characters").action(async (n) => { await d.eraseText(+n); console.log("erased", n); });
 program.command("button <name>").description("Hardware button: home | volumeup | volumedown").action(async (n) => { await d.pressButton(n); console.log("pressed", n); });
-program.command("home").description("Go to springboard").action(async () => { await d.pressButton("home"); console.log("home"); });
+program.command("home").description("Go to springboard").option("--look <name>", "after going home, settle + screenshot + list")
+  .action(async (o) => { await d.pressButton("home"); console.log("home"); await thenLook(o.look); });
 
 program.command("find <text>").description("Find tappable elements whose label contains <text> (with point coords)")
   .action(async (t) => { const c = await d.find(t); if (!c.length) return console.log("NOT FOUND:", t); for (const e of c.slice(0, 8)) console.log(`(${e.cx.toFixed(0)},${e.cy.toFixed(0)}) [${e.area.toFixed(0)}] ${e.type} ${e.label.slice(0, 50)}`); });
 program.command("taptext <text>").description("Find by label and tap the most specific match (retries)")
-  .action(async (t) => { const e = await d.tapText(t); console.log(`-> ${t} @ (${e.cx.toFixed(0)},${e.cy.toFixed(0)})`); });
+  .option("--look <name>", "after tapping, settle + screenshot + list the resulting screen")
+  .action(async (t, o) => { const e = await d.tapText(t); console.log(`-> ${t} @ (${e.cx.toFixed(0)},${e.cy.toFixed(0)})`); await thenLook(o.look); });
+
+program.command("look <name>").description("One step: screenshot + numbered element list in a single call (the fast drive loop)")
+  .action(async (name) => { try { await look(name); } catch (err: any) { console.error(`couldn't read the screen — is the driver up? \`roveflow doctor\`\n${err?.message ?? err}`); process.exit(1); } });
+program.command("elements").alias("els").description("Numbered list of on-screen elements — then tap one with `tapindex <n>` (most reliable)")
+  .action(async () => {
+    try { await listElements(); } catch (err: any) { console.error(`couldn't read the screen — is the driver up? \`roveflow doctor\`\n${err?.message ?? err}`); process.exit(1); }
+  });
+program.command("tapindex <n>").alias("tapi").description("Tap element #n from the last list (true center, no pixel math). --look <name> returns the next screen in the same call.")
+  .option("--look <name>", "after tapping, settle + screenshot + list the resulting screen (one round-trip step)")
+  .action(async (n, o) => {
+    try {
+      if (!existsSync(ELEMENTS_CACHE)) throw new Error("run `roveflow elements` or `roveflow look <name>` first to list what's on screen");
+      const els: d.El[] = JSON.parse(readFileSync(ELEMENTS_CACHE, "utf8"));
+      const e = els[+n - 1];
+      if (!e) throw new Error(`no element #${n} — the last list had ${els.length}. Re-run \`roveflow look <name>\`.`);
+      await d.tap(e.cx, e.cy);
+      console.log(`-> [${n}] ${e.type} "${e.label.slice(0, 40)}" @ (${e.cx.toFixed(0)},${e.cy.toFixed(0)})`);
+      await thenLook(o.look);
+    } catch (err: any) { console.error(err?.message ?? err); process.exit(1); }
+  });
 
 program.command("tree").description("Print visible labeled elements (label · point · area)").action(async () => {
   const seen = new Set<string>();

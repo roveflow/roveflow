@@ -1,7 +1,7 @@
 // iOS backend — WebDriverAgent REST (forwarded on localhost:WDA_PORT) + go-ios (`ios`).
 // Coordinates are WDA *points*; screenshots are 3× pixels (scale handled in the router).
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { El } from "./types.js";
 import { slug } from "./types.js";
@@ -37,6 +37,8 @@ export function detected(): boolean {
 
 export function udid(): string {
   if (_udid) return _udid;
+  // A pinned UDID (from setup / the device cache) avoids the go-ios `ios list` probe.
+  if (process.env.ROVEFLOW_UDID) return (_udid = process.env.ROVEFLOW_UDID);
   _udid = usbUdids()[0] ?? null;
   if (!_udid) throw new Error("No iPhone found. Connect it (USB, unlocked) and run `roveflow setup`.");
   return _udid;
@@ -55,6 +57,10 @@ async function session(): Promise<string> {
   const r = await req("POST", "/session", { capabilities: { alwaysMatch: {} } });
   _sid = r.sessionId ?? r.value?.sessionId;
   if (!_sid) throw new Error("Could not create WDA session — run `roveflow doctor`.");
+  // Cap the accessibility-snapshot depth so /source (the element dump) is faster.
+  // 30 preserves all labeled/interactive elements (they sit mid-tree); only deep
+  // decorative nodes are trimmed. Tunable via ROVEFLOW_SNAPSHOT_DEPTH.
+  try { await req("POST", `/session/${_sid}/appium/settings`, { settings: { snapshotMaxDepth: Number(process.env.ROVEFLOW_SNAPSHOT_DEPTH ?? 30) } }); } catch { /* best effort */ }
   return _sid;
 }
 
@@ -82,9 +88,17 @@ export async function eraseText(n: number): Promise<void> { const sid = await se
 export async function pressButton(name: string): Promise<void> { const sid = await session(); await req("POST", `/session/${sid}/wda/pressButton`, { name }); }
 export function launch(bundleId: string): void { ios(["launch", bundleId, "--udid", udid()], { quiet: true }); }
 export function stop(bundleId: string): void { ios(["kill", bundleId, "--udid", udid()], { quiet: true }); }
-export function screenshot(name: string, dir: string): string {
+export async function screenshot(name: string, dir: string): Promise<string> {
   mkdirSync(dir, { recursive: true });
   const out = path.join(dir, `${slug(name)}.png`);
+  // Capture over the open WDA session (in-process HTTP) instead of spawning a
+  // fresh go-ios subprocess each call — the subprocess spawn dominated per-step latency.
+  try {
+    const sid = await session();
+    const r = await req("GET", `/session/${sid}/screenshot`);
+    const b64 = r?.value;
+    if (typeof b64 === "string" && b64.length) { writeFileSync(out, Buffer.from(b64, "base64")); return out; }
+  } catch { /* fall back to go-ios below */ }
   ios(["screenshot", "--udid", udid(), "--output", out], { quiet: true });
   return out;
 }

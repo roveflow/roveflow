@@ -175,7 +175,7 @@ export function buildAtlas(outDir: string): { html: string; screens: number; pat
 
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(m.app)} — Screen Map & User Flows · Roveflow Atlas</title><style>
+<title>${esc(m.app)} — Screen Map & User Flows · Roveflow</title><style>
 :root{--bg:#0b0b0c;--panel:#161617;--panel2:#1d1d1f;--bd:#2a2a2c;--tx:#ededed;--mut:#8a8a8f;--acc:${ACCENT}}
 *{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);
 font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif}
@@ -220,7 +220,7 @@ footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padd
 .zoom{cursor:zoom-in}#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50}#lightbox.show{display:flex}
 #lightbox img{max-height:92vh;max-width:92vw;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.6)}#lightbox-x{position:fixed;top:18px;right:26px;font-size:40px;color:#fff;cursor:pointer;line-height:1}
 </style></head><body><div class="app">
-<header><div class="crumb"><a href="#">ROVEFLOW</a><span class="sep">/</span><a href="#">Atlas</a><span class="sep">/</span><span class="app">${esc(m.app)}</span><span class="tag">${esc(m.platform)}</span></div>
+<header><div class="crumb"><a href="#">ROVEFLOW</a><span class="sep">/</span><a href="#">Flows</a><span class="sep">/</span><span class="app">${esc(m.app)}</span><span class="tag">${esc(m.platform)}</span></div>
 <div class="tabs"><button class="tab active" data-view="map">Map</button><button class="tab" data-view="screens">Screens (${nScreens})</button><button class="tab" data-view="report">Report</button></div>
 <div class="stats"><div class="stat"><b>${nScreens}</b><span>Screens</span></div><div class="stat"><b>${nPaths}</b><span>Paths</span></div><div class="stat"><b>${nSteps}</b><span>Steps</span></div></div></header>
 <div class="main"><aside><div class="aside-h">User Journeys</div><div class="aside-sub">${nPaths} paths · ${esc(m.subtitle)}</div>
