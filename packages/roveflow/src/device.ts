@@ -20,8 +20,15 @@ export function platform(): Platform {
 }
 const be = () => (platform() === "ios" ? ios : android);
 
-/** screenshot-pixels per tap-point: iOS is 3×, Android is 1:1. */
-export function scale(): number { return platform() === "ios" ? Number(process.env.ROVEFLOW_SCALE ?? 3) : 1; }
+/** screenshot-pixels per tap-point. Android is 1:1; iOS varies by device
+ *  (@2x on SE/11/XR, @3x on Pro/Plus), so we derive it from the live device
+ *  (screenshot px ÷ window points) instead of assuming 3. `ROVEFLOW_SCALE`
+ *  forces a value and skips the probe. */
+export async function scale(): Promise<number> {
+  if (process.env.ROVEFLOW_SCALE) return Number(process.env.ROVEFLOW_SCALE);
+  if (platform() !== "ios") return 1;
+  return ios.scale();
+}
 
 export function udid(): string { return be().udid(); }
 export function listApps(): string { return be().listApps(); }

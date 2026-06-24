@@ -2,7 +2,7 @@
 // roveflow-out/journeys.json + roveflow-out/screens/*.png. Ported from the POC.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { slug } from "./types.js";
@@ -18,10 +18,34 @@ const CAT_COLORS: Record<string, string> = {
 const ACCENT = "#b9f24d";
 
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-// Screen image filenames go through the SAME slug as capture (see types.ts) so the
-// atlas's `screens/<id>.png` refs resolve regardless of how the id was written in
-// journeys.json ("model_selection" → screens/model-selection.png).
-const img = (id: string) => `screens/${slug(id)}.png`;
+
+// ffmpeg powers BOTH the screen→JPEG downscale and the journey videos. Resolved by
+// name (the desktop puts the bundled engine dir first on PATH); override the path
+// with ROVEFLOW_FFMPEG. Tunables: target width + JPEG quality (-q:v 2 best … 31 worst).
+const FFMPEG = process.env.ROVEFLOW_FFMPEG ?? "ffmpeg";
+const JPEG_WIDTH = Number(process.env.ROVEFLOW_JPEG_WIDTH ?? 1206);
+const JPEG_Q = String(process.env.ROVEFLOW_JPEG_Q ?? 2);
+
+// Downscale + JPEG-encode each captured screen so the shared atlas/zip is ~10x
+// smaller. Source PNGs stay on disk (lossless; still used for video frames + the
+// live capture grid) — only the atlas and the share bundle reference the .jpg.
+// Returns the set of slugs that now have a .jpg (so we can fall back to .png when
+// ffmpeg is absent). Idempotent: skips a slug whose .jpg is already current.
+function transcodeScreens(outDir: string, slugs: string[]): Set<string> {
+  const dir = path.join(outDir, "screens");
+  const done = new Set<string>();
+  for (const s of slugs) {
+    const png = path.join(dir, `${s}.png`);
+    const jpg = path.join(dir, `${s}.jpg`);
+    if (existsSync(jpg) && existsSync(png) && statSync(jpg).mtimeMs >= statSync(png).mtimeMs) { done.add(s); continue; }
+    if (!existsSync(png)) continue;
+    try {
+      execFileSync(FFMPEG, ["-y", "-i", png, "-vf", `scale=${JPEG_WIDTH}:-2`, "-q:v", JPEG_Q, jpg], { stdio: "ignore" });
+      if (existsSync(jpg)) done.add(s);
+    } catch { /* ffmpeg missing — keep the PNG; the atlas references it instead */ }
+  }
+  return done;
+}
 
 export function makeVideos(outDir: string): void {
   const m: Manifest = JSON.parse(readFileSync(path.join(outDir, "journeys.json"), "utf8"));
@@ -36,7 +60,7 @@ export function makeVideos(outDir: string): void {
     writeFileSync(list, frames.map((f) => `file '${f}'\nduration ${SECS}`).join("\n") + `\nfile '${frames.at(-1)}'\n`);
     const out = path.join(videos, `${slug(j.title)}.mp4`);
     try {
-      execFileSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", list,
+      execFileSync(FFMPEG, ["-y", "-f", "concat", "-safe", "0", "-i", list,
         "-vf", "scale=560:-2,format=yuv420p", "-r", "30", "-movflags", "+faststart", out], { stdio: "ignore" });
     } catch { /* ffmpeg missing — skip videos */ }
     rmSync(list, { force: true });
@@ -132,6 +156,12 @@ export function buildAtlas(outDir: string): { html: string; screens: number; pat
   const nSteps = m.journeys.reduce((a, j) => a + j.flow.length, 0);
   const color = (c: string) => CAT_COLORS[c] ?? ACCENT;
 
+  // Downscale screens to JPEG, then reference .jpg where it exists (else .png).
+  // Filenames go through the SAME slug as capture (see types.ts) so refs resolve
+  // regardless of how the id was written in journeys.json.
+  const jpgSet = transcodeScreens(outDir, [...new Set(Object.keys(m.screens).map(slug))]);
+  const img = (id: string) => `screens/${slug(id)}.${jpgSet.has(slug(id)) ? "jpg" : "png"}`;
+
   // --- Map: layered node graph (Revyl-style) ---
   const present = new Set(Object.keys(m.screens));
   const L = layoutGraph(m, present);
@@ -182,6 +212,7 @@ font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-
 .app{display:flex;flex-direction:column;height:100vh}
 header{display:flex;align-items:center;gap:16px;padding:0 18px;height:54px;border-bottom:1px solid var(--bd);background:var(--panel);flex:0 0 auto}
 .crumb{display:flex;align-items:center;gap:8px;font-weight:600}.crumb a{color:var(--mut);text-decoration:none}.crumb .sep{color:#444}.crumb .app{color:var(--tx)}
+.brand{display:inline-flex;align-items:center;gap:7px;color:var(--tx)!important;text-decoration:none}.brand:hover{opacity:.85}
 .tag{font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:5px;padding:1px 6px;text-transform:uppercase;letter-spacing:.04em}
 .tabs{display:flex;gap:4px;margin-left:8px}.tab{background:none;border:0;color:var(--mut);padding:6px 12px;border-radius:7px;cursor:pointer;font:inherit}.tab.active{background:var(--panel2);color:var(--tx)}
 .stats{margin-left:auto;display:flex;gap:22px}.stat b{display:block;font-size:15px}.stat span{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
@@ -212,7 +243,7 @@ header{display:flex;align-items:center;gap:16px;padding:0 18px;height:54px;borde
 .gcontrols button{width:34px;height:34px;border-radius:9px;border:1px solid var(--bd);background:var(--panel2);color:var(--tx);font-size:17px;line-height:1;cursor:pointer}
 .gcontrols button:hover{border-color:#3a3a3d;color:var(--acc)}
 .ghint{position:absolute;right:16px;bottom:15px;color:var(--mut);font-size:11px;z-index:5;pointer-events:none}
-footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padding:9px 18px;color:var(--mut);font-size:12px;display:flex;gap:8px;align-items:center}footer b{color:var(--acc);font-weight:600}
+footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padding:9px 18px;color:var(--mut);font-size:12px;display:flex;gap:8px;align-items:center}footer b{color:var(--acc);font-weight:600}footer a{color:inherit;text-decoration:none}footer a:hover b{text-decoration:underline}
 .report{max-width:720px}.report h3{margin:22px 0 8px}
 .recordings{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:22px}
 .rec{background:var(--panel2);border:1px solid var(--bd);border-radius:12px;padding:14px}.rec-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
@@ -220,7 +251,7 @@ footer{flex:0 0 auto;border-top:1px solid var(--bd);background:var(--panel);padd
 .zoom{cursor:zoom-in}#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50}#lightbox.show{display:flex}
 #lightbox img{max-height:92vh;max-width:92vw;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.6)}#lightbox-x{position:fixed;top:18px;right:26px;font-size:40px;color:#fff;cursor:pointer;line-height:1}
 </style></head><body><div class="app">
-<header><div class="crumb"><a href="#">ROVEFLOW</a><span class="sep">/</span><a href="#">Flows</a><span class="sep">/</span><span class="app">${esc(m.app)}</span><span class="tag">${esc(m.platform)}</span></div>
+<header><div class="crumb"><a class="brand" href="https://roveflow.dev" target="_blank" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.75"/><rect x="12" y="7" width="5" height="5" rx="1" fill="var(--acc)"/></svg><span>roveflow</span></a><span class="sep">/</span><a href="https://roveflow.dev/#flows" target="_blank" rel="noopener">Flows</a><span class="sep">/</span><span class="app">${esc(m.app)}</span><span class="tag">${esc(m.platform)}</span></div>
 <div class="tabs"><button class="tab active" data-view="map">Map</button><button class="tab" data-view="screens">Screens (${nScreens})</button><button class="tab" data-view="report">Report</button></div>
 <div class="stats"><div class="stat"><b>${nScreens}</b><span>Screens</span></div><div class="stat"><b>${nPaths}</b><span>Paths</span></div><div class="stat"><b>${nSteps}</b><span>Steps</span></div></div></header>
 <div class="main"><aside><div class="aside-h">User Journeys</div><div class="aside-sub">${nPaths} paths · ${esc(m.subtitle)}</div>
@@ -233,7 +264,7 @@ ${m.journeys.map(card).join("")}</aside>
 <p style="color:var(--mut)">Captured live from a physical iPhone by roving the App Store build via WebDriverAgent, then assembled into this flow map. ${nScreens} unique screens across ${nPaths} user journeys.</p></div>
 <h3 style="margin:6px 0 16px">Journey recordings</h3><div class="recordings">${recordings}</div></div></div>
 <div id="lightbox"><img id="lightbox-img" src=""><span id="lightbox-x">&times;</span></div>
-<footer>Mapped by <b>Roveflow</b> <span class="sep">·</span> ${esc(m.app)} ${esc(m.platform)} <span class="sep">·</span> ${nScreens} screens, captured from physical device</footer></div>
+<footer>Mapped by <a href="https://roveflow.dev" target="_blank" rel="noopener"><b>Roveflow</b></a> <span class="sep">·</span> ${esc(m.app)} ${esc(m.platform)} <span class="sep">·</span> ${nScreens} screens, captured from physical device</footer></div>
 <script>
 const tabs=[...document.querySelectorAll('.tab')],views={map:'view-map',screens:'view-screens',report:'view-report'};
 tabs.forEach(t=>t.onclick=()=>{tabs.forEach(x=>x.classList.remove('active'));t.classList.add('active');for(const k in views)document.getElementById(views[k]).classList.toggle('hidden',k!==t.dataset.view);if(t.dataset.view==='map'&&window.__fit)window.__fit()});

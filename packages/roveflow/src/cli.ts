@@ -5,8 +5,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import * as d from "./device.js";
+import { slug } from "./types.js";
 import { setup, doctor } from "./setup.js";
 import { buildAtlas, makeVideos } from "./atlas.js";
+import { buildShareZip, uploadShare } from "./share.js";
 import { uninstall, keygen, installWda, exportWda } from "./signing.js";
 
 const OUT = process.env.ROVEFLOW_OUT ?? path.resolve("roveflow-out");
@@ -84,11 +86,11 @@ program.command("screenshot <name>").alias("snap").description("Capture current 
 program.command("tap <x> <y>").description("Tap. Add --px to give coordinates read from a screenshot.")
   .option("--px", "treat x/y as screenshot pixels (iOS divides by device scale; Android is 1:1)")
   .option("--look <name>", "after tapping, settle + screenshot + list the resulting screen")
-  .action(async (x, y, o) => { const s = o.px ? d.scale() : 1; await d.tap(+x / s, +y / s); console.log(`tapped ${x},${y}${o.px ? " (px)" : ""}`); await thenLook(o.look); });
+  .action(async (x, y, o) => { const s = o.px ? await d.scale() : 1; await d.tap(+x / s, +y / s); console.log(`tapped ${x},${y}${o.px ? " (px)" : ""}`); await thenLook(o.look); });
 
 program.command("swipe <x1> <y1> <x2> <y2>").description("Swipe/drag. Add --px for screenshot pixel coords.")
   .option("--px", "pixel coords").option("--dur <ms>", "duration ms", "600").option("--look <name>", "after swiping, settle + screenshot + list the resulting screen")
-  .action(async (x1, y1, x2, y2, o) => { const s = o.px ? d.scale() : 1; await d.swipe(+x1 / s, +y1 / s, +x2 / s, +y2 / s, +o.dur); console.log("swiped"); await thenLook(o.look); });
+  .action(async (x1, y1, x2, y2, o) => { const s = o.px ? await d.scale() : 1; await d.swipe(+x1 / s, +y1 / s, +x2 / s, +y2 / s, +o.dur); console.log("swiped"); await thenLook(o.look); });
 
 program.command("type <text>").description("Type into the focused field").option("--look <name>", "after typing, settle + screenshot + list")
   .action(async (t, o) => { await d.typeText(t); console.log("typed:", t); await thenLook(o.look); });
@@ -136,6 +138,39 @@ program.command("atlas").description("Build atlas.html (+ videos) from roveflow-
     if (o.videos) makeVideos(OUT);
     const r = buildAtlas(OUT);
     console.log(`wrote ${path.join(OUT, "atlas.html")} (${r.screens} screens, ${r.paths} journeys, ${r.steps} steps)`);
+  });
+
+// Build atlas.html on demand if the run has a manifest but was never assembled,
+// so `export`/`share` Just Work after a capture without a separate `atlas` step.
+function ensureAtlasBuilt(): void {
+  if (existsSync(path.join(OUT, "atlas.html"))) return;
+  if (!existsSync(path.join(OUT, "journeys.json"))) throw new Error(`nothing to share in ${OUT} — capture a run first`);
+  makeVideos(OUT);
+  buildAtlas(OUT);
+}
+
+// ---- share ----
+program.command("export [zip]").description("Bundle the atlas (+ screens/videos) into a self-contained .zip")
+  .action((zip) => {
+    try {
+      ensureAtlasBuilt();
+      const m = JSON.parse(readFileSync(path.join(OUT, "journeys.json"), "utf8"));
+      const dest = path.resolve(zip ?? `${slug(m.app ?? "roveflow")}-flow.zip`);
+      const r = buildShareZip(OUT, dest);
+      console.log(`wrote ${dest} (${r.files} files, ${(r.bytes / 1024 / 1024).toFixed(1)} MB)`);
+      console.log("Unzip and open atlas.html — works offline, no server.");
+    } catch (e: any) { console.error(e?.message ?? e); process.exit(1); }
+  });
+
+program.command("share").description("Upload the atlas and print an unlisted web link")
+  .option("--api <url>", "share service base url", process.env.ROVEFLOW_SHARE_API)
+  .action(async (o) => {
+    try {
+      ensureAtlasBuilt();
+      console.log("uploading…");
+      const { url } = await uploadShare(OUT, o.api, (s) => process.stdout.write(`\r${s}`.padEnd(60)));
+      console.log(`\nShareable link (unlisted): ${url}`);
+    } catch (e: any) { console.error("\n" + (e?.message ?? e)); process.exit(1); }
   });
 
 program.command("serve").description("Serve the atlas locally").option("-p, --port <n>", "port", "8765").action((o) => {

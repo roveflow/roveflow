@@ -25,12 +25,14 @@ commands = fewer model turns = faster. Repeat until you've covered the journeys.
 3. **Act and advance in one call** — append `--look <next-name>` so the same command taps, waits for the screen to settle, and returns the next screen + its element list:
    - `roveflow tapindex 3 --look cart`  ← **default.** Taps element #3 at its true center, then returns the cart screen + elements.
    - `roveflow taptext "Add item" --look cart` · `roveflow swipe … --px --look feed` · `roveflow type "hi" --look results` · `roveflow home --look home`
-   - `roveflow tap <x> <y> --px --look <name>`  ← last resort, only for an unlabeled target (canvas/image with no element in the list).
+   - `roveflow tap <x> <y> --px --look <name>`  ← true last resort. Unlabeled controls now show up as marks like `[7] Other (unlabeled · top-right)`, so prefer `tapindex` even for icon/close buttons.
 4. **Track** what you've seen so you don't loop.
 
-Why this shape: one command per step is one model turn (the slow part); `look`/`--look` fold screenshot + element list + settle into that one call. Tapping by index hits the element's real center from the accessibility tree, so it lands even on **tiny targets** — only guess pixel coordinates (`--px`) when the target has no label. Indices are valid only for the screen you just listed; every `--look` refreshes them.
+Why this shape: one command per step is one model turn (the slow part); `look`/`--look` fold screenshot + element list + settle into that one call. Tapping by index hits the element's real center from the accessibility tree, so it lands even on **tiny targets** (segmented tabs, close X) — match the on-screen target to a mark by its label/position and tap that index. Indices are valid only for the screen you just listed; every `--look` refreshes them.
 
-Rules: screenshots are 3× the tap-point space — the CLI converts pixels for you with `--px`. Be safe: never log out, delete, send, or buy. If a tap doesn't change the screen after two tries, try another target or go back. Cap a journey around 8 screens, then start the next.
+Strategy when a tap misses or no-ops: **never repeat a pixel tap at the same spot.** Re-run `roveflow look <name>` (or `elements`) to refresh the marks, then `tapindex` the right one — the target is almost always in the list (including `(unlabeled …)` marks). Only fall back to `--px` if nothing in the list matches what you see, and if that misses once, re-`look` rather than nudging coordinates. If a target still isn't listed, it may be deeper than the snapshot depth — `ROVEFLOW_SNAPSHOT_DEPTH=60 roveflow look <name>` surfaces deeper controls (slower).
+
+Rules: the CLI derives the screenshot-pixel→point scale per device and converts pixels for you with `--px`. Be safe: never log out, delete, send, or buy. If a tap doesn't change the screen after two tries, switch targets or go back — don't re-guess pixels. Cap a journey around 8 screens, then start the next.
 
 ## 3. Build the Atlas
 Write `roveflow-out/journeys.json`:
