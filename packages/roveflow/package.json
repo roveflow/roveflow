@@ -1,6 +1,6 @@
 {
   "name": "roveflow",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Clone any app's UX. Point Roveflow at any iPhone or Android app and it auto-maps every screen and user journey into a designer-ready Atlas.",
   "type": "module",
   "bin": {
