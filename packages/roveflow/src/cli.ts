@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import * as d from "./device.js";
@@ -14,6 +14,8 @@ import { uninstall, keygen, installWda, exportWda } from "./signing.js";
 const OUT = process.env.ROVEFLOW_OUT ?? path.resolve("roveflow-out");
 const SCREENS = path.join(OUT, "screens");
 const ELEMENTS_CACHE = path.join(OUT, "elements.json");
+const STATE = path.join(OUT, ".state.json");   // last observed screen (name + signature)
+const STEPS = path.join(OUT, "steps.jsonl");   // append-only capture log → ground truth for the atlas graph
 const DEVICE_CACHE = path.join(os.tmpdir(), "roveflow-device.json");
 
 // Reuse the platform + UDID that `setup` detected, so routine commands skip the
@@ -32,16 +34,38 @@ function printElements(els: d.El[]): number {
   mkdirSync(OUT, { recursive: true });
   writeFileSync(ELEMENTS_CACHE, JSON.stringify(els));
   if (!els.length) console.log("(no labeled elements — fall back to a screenshot + `tap <x> <y> --px`)");
-  else els.forEach((e, i) => console.log(`[${String(i + 1).padStart(2)}] ${(e.type || "?").padEnd(12)} ${e.label.slice(0, 52)}`));
+  else els.forEach((e, i) => console.log(`[${String(i + 1).padStart(2)}] ${(e.type || "?").padEnd(12)} ${(e.label || "").slice(0, 48).padEnd(48)}${e.id ? ` #${e.id}` : ""}`));
   return els.length;
 }
 async function listElements(): Promise<number> { return printElements(await d.elements()); }
+
+type Seen = { name: string; fp: string };
+function readState(): Seen | null { try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return null; } }
+function priorScreens(): Seen[] {
+  try { return readFileSync(STEPS, "utf8").trim().split("\n").map((l) => JSON.parse(l)); } catch { return []; }
+}
+/** Record the observed screen and surface dedup signals: a sheet/overlay floating
+ *  over the previous screen, a no-op action (signature unchanged), or a revisit of
+ *  a screen already captured under another name. This is the machinery that was
+ *  missing — previously the model was the only memory of "have I seen this?". */
+function recordScreen(name: string, meta: { fp: string; overlay: boolean; n: number }): void {
+  const prev = readState();
+  const prior = priorScreens();
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(STATE, JSON.stringify({ name, fp: meta.fp }));
+  appendFileSync(STEPS, JSON.stringify({ ts: new Date().toISOString(), name, fp: meta.fp, overlay: meta.overlay, n: meta.n }) + "\n");
+  if (meta.overlay) console.log("⚠ overlay/sheet open over the previous screen — dismiss it (swipe the sheet down, or tap outside) before navigating, or you'll re-capture the same overlay under a new name.");
+  if (prev && prev.fp === meta.fp && prev.name !== name) console.log(`⚠ no-op: signature ${meta.fp} is identical to "${prev.name}" — your last action changed nothing. Don't save this as a new screen.`);
+  else { const hit = prior.find((s) => s.fp === meta.fp && s.name !== name); if (hit) console.log(`↩ revisit: same signature ${meta.fp} as "${hit.name}" — this is not a new screen, reuse that name.`); }
+}
+
 /** One round-trip "observe": screenshot + element list together (fetched in
  *  parallel), so a drive step is a single CLI call (one model turn) not several. */
 async function look(name: string): Promise<void> {
   const [shot, els] = await Promise.all([d.screenshot(name, SCREENS), d.elements()]);
   console.log(shot);
   printElements(els);
+  recordScreen(name, await d.screenMeta(els));
 }
 /** After an action, settle briefly then observe — so act+observe is one call. */
 async function thenLook(name?: string): Promise<void> {
@@ -130,6 +154,8 @@ program.command("tree").description("Print visible labeled elements (label · po
   for (const e of await d.collect()) { const k = `${e.type}|${e.cx.toFixed(0)},${e.cy.toFixed(0)}|${e.label}`; if (seen.has(k)) continue; seen.add(k); console.log(`${e.type.padEnd(11)} (${e.cx.toFixed(0).padStart(4)},${e.cy.toFixed(0).padStart(4)}) [${e.area.toFixed(0).padStart(7)}] ${e.label.slice(0, 46)}`); }
 });
 program.command("size").description("Window size in points").action(async () => console.log(await d.windowSize()));
+program.command("signature").alias("sig").description("Structural fingerprint + overlay flag for the current screen (dedup signal)")
+  .action(async () => { const els = await d.elements(); const m = await d.screenMeta(els); console.log(`fp=${m.fp}  overlay=${m.overlay}  elements=${m.n}  withId=${els.filter((e) => e.id).length}`); });
 
 // ---- atlas ----
 program.command("atlas").description("Build atlas.html (+ videos) from roveflow-out/journeys.json")

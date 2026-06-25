@@ -135,7 +135,33 @@ const INTERACTIVE = new Set([
 ]);
 const shortType = (t: string) => (t || "").replace(/^XCUIElementType/, "") || "Element";
 
+// A developer-set accessibility identifier looks like a code token (no spaces,
+// not a bare number). WDA puts it in `rawIdentifier`; older runners surface it
+// as `name` (which falls back to the label when no identifier is set, so we only
+// take `name` when it's a token AND differs from the human label).
+const isToken = (s: any): s is string => typeof s === "string" && s.length > 0 && !/\s/.test(s) && !/^\d+$/.test(s);
+function stableId(n: any): string {
+  if (isToken(n.rawIdentifier)) return n.rawIdentifier;
+  if (isToken(n.name) && n.name !== n.label) return n.name;
+  return "";
+}
+// Signal that we're floating over the previous screen (the source of the "6× same
+// overlay" dupes). The reliable tell is the *presentation container itself* — a
+// dimming/scrim backdrop or an actual Sheet/Popover element — NOT any control that
+// merely mentions a drawer in its id (e.g. YouTube's `more_drawer_button`, which is
+// a feed button, not an open overlay). Spotify's Connect picker trips this via its
+// `SheetPresentation.Dimming` layer and `sheet-view` container.
+const OVERLAY_RE = /dimming|scrim|backdrop|sheetpresentation|sheet-view|popover/i;
+const isOverlayNode = (n: any): boolean => {
+  const st = shortType(n.type);
+  if (st === "Sheet" || st === "Popover") return true;
+  return OVERLAY_RE.test(n.rawIdentifier ?? "") || OVERLAY_RE.test(n.name ?? "");
+};
+let _overlay = false;
+export function overlay(): boolean { return _overlay; }
+
 export async function collect(): Promise<El[]> {
+  _overlay = false;
   const sid = await session();
   const src = (await req("GET", `/session/${sid}/source?format=json`)).value;
   const sz = ((await req("GET", `/session/${sid}/window/size`)).value ?? {}) as { width?: number; height?: number };
@@ -150,6 +176,9 @@ export async function collect(): Promise<El[]> {
   };
   const out: El[] = [];
   const walk = (n: any) => {
+    // Overlay detection scans the whole tree (the dimming layer often has no rect
+    // / isn't "visible"), so do it before the visibility gate below.
+    if (!_overlay && isOverlayNode(n)) _overlay = true;
     const r = n.rect ?? {}; const w = r.width ?? 0, h = r.height ?? 0;
     const visible = n.isVisible === 1 || n.isVisible === "1" || n.isVisible === true;
     if (visible && w > 0 && h > 0) {
@@ -158,13 +187,15 @@ export async function collect(): Promise<El[]> {
       const leaf = !(n.children && n.children.length);
       const small = !W || !H || w * h < W * H * 0.5;
       const sized = w >= 20 && h >= 20;
-      let label = n.label || n.name || n.value || "";
-      // No native label? Surface it anyway if it's an interactive type, or a small
-      // visible leaf icon/image/other (custom overlay buttons, the keynote close X) —
-      // so it gets an index and the model taps its true center, never pixel math.
-      if (!label && sized && small && (INTERACTIVE.has(st) || (leaf && (st === "Other" || st === "Image" || st === "Icon"))))
-        label = `(unlabeled ${st}${region(cx, cy) ? ` · ${region(cx, cy)}` : ""})`;
-      if (label) out.push({ type: n.type ?? "", label, cx, cy, area: w * h });
+      const id = stableId(n);
+      let label = n.label || n.value || (isToken(n.name) ? n.name : "") || "";
+      // No native label? Surface it anyway if it has a stable id, or it's an
+      // interactive type, or a small visible leaf icon/image/other (custom overlay
+      // buttons, the keynote close X) — so it gets an index and the model taps its
+      // true center, never pixel math.
+      if (!label && sized && small && (id || INTERACTIVE.has(st) || (leaf && (st === "Other" || st === "Image" || st === "Icon"))))
+        label = id || `(unlabeled ${st}${region(cx, cy) ? ` · ${region(cx, cy)}` : ""})`;
+      if (label || id) out.push({ type: n.type ?? "", label, cx, cy, area: w * h, ...(id ? { id } : {}) });
     }
     for (const c of n.children ?? []) walk(c);
   };

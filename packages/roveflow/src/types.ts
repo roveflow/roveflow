@@ -1,5 +1,8 @@
 // Shared shape for a found on-screen element (label + center + size).
-export type El = { type: string; label: string; cx: number; cy: number; area: number };
+// `id` is the app's stable accessibility identifier when present (iOS
+// rawIdentifier / token name, Android resource-id) — far more durable than
+// label+coords for dedup and for matching an element across visits.
+export type El = { type: string; label: string; cx: number; cy: number; area: number; id?: string };
 export type Platform = "ios" | "android";
 
 /** Canonical screen-name → filename slug. Any run of non-alphanumerics (spaces,

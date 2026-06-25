@@ -58,18 +58,30 @@ export function screenshot(name: string, dir: string): string {
   const buf = execFileSync("adb", ["-s", udid(), "exec-out", "screencap", "-p"], { maxBuffer: 64 * 1024 * 1024 });
   writeFileSync(out, buf); return out;
 }
+// Set while walking the last dump — Android dialogs/bottom-sheets float over the
+// previous screen the same way iOS sheets do (mirrors ios.overlay()).
+let _overlay = false;
+export function overlay(): boolean { return _overlay; }
+const OVERLAY_RE = /Dialog|BottomSheet|PopupWindow|ModalBottomSheet/i;
+// Strip the package prefix from a resource-id (com.app:id/login_button -> login_button).
+const shortId = (s: string) => s.replace(/^.*\/(?=.)/, "");
+
 export async function collect(): Promise<El[]> {
+  _overlay = false;
   sh(["shell", "uiautomator", "dump", "/sdcard/rf-dump.xml"], { quiet: true });
   const xml = sh(["shell", "cat", "/sdcard/rf-dump.xml"], { quiet: true });
   const out: El[] = [];
   for (const m of xml.matchAll(/<node\b([^>]*?)\/?>/g)) {
     const a = m[1];
     const get = (k: string) => (a.match(new RegExp(k + '="([^"]*)"')) || [])[1] ?? "";
+    const cls = get("class");
+    if (!_overlay && OVERLAY_RE.test(cls)) _overlay = true;
+    const id = shortId(get("resource-id"));
     const label = get("text") || get("content-desc");
     const b = get("bounds").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-    if (!label || !b) continue;
+    if ((!label && !id) || !b) continue;
     const x1 = +b[1], y1 = +b[2], x2 = +b[3], y2 = +b[4];
-    out.push({ type: (get("class").split(".").pop() || ""), label, cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, area: (x2 - x1) * (y2 - y1) });
+    out.push({ type: (cls.split(".").pop() || ""), label: label || id, cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, area: (x2 - x1) * (y2 - y1), ...(id ? { id } : {}) });
   }
   return out;
 }

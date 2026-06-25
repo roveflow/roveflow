@@ -53,12 +53,50 @@ export async function elements(): Promise<El[]> {
   const seen = new Set<string>();
   const list: El[] = [];
   for (const e of await collect()) {
-    const k = `${e.type}|${e.label}|${Math.round(e.cx)},${Math.round(e.cy)}`;
-    if (seen.has(k) || !e.label) continue;
+    // Prefer the stable id for identity; coarsen the position to an 8pt grid so a
+    // few-px shift between visits doesn't read as a different element. Keep id-only
+    // elements (no human label) — they're tappable and identifiable.
+    const k = `${e.id || `${e.type}|${e.label}`}|${Math.round(e.cx / 8)},${Math.round(e.cy / 8)}`;
+    if (seen.has(k) || (!e.label && !e.id)) continue;
     seen.add(k);
     list.push(e);
   }
   return list.sort((a, b) => (Math.abs(a.cy - b.cy) > 12 ? a.cy - b.cy : a.cx - b.cx));
+}
+
+export function overlay(): boolean { const b = be() as any; return typeof b.overlay === "function" ? b.overlay() : false; }
+
+// djb2 → base36, small and stable. Not crypto; just a screen signature.
+function hash(s: string): string { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(36); }
+const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(s);
+// Types whose label is part of the screen's stable skeleton (nav/controls), vs
+// free body text (StaticText/Image) that changes with content and would over-split.
+const STRUCT = new Set(["Button", "Cell", "Tab", "TabBar", "NavigationBar", "SegmentedControl", "TextField", "SearchField", "SecureTextField", "Switch", "Link", "MenuItem"]);
+const short = (t: string) => (t || "").replace(/^XCUIElementType/, "").replace(/^android\.widget\./, "");
+const normLabel = (s: string) => s.toLowerCase().replace(/\d+/g, "#").replace(/[^a-z#]+/g, " ").trim();
+
+/** A structural fingerprint of the screen: the multiset of stable ids plus the
+ *  labels of skeletal controls, with volatile content (numbers, body text)
+ *  dropped — so the same screen dedups across visits even when its data differs,
+ *  while genuinely different screens diverge. */
+export function fingerprint(els: El[]): string {
+  const toks = new Set<string>();
+  for (const e of els) {
+    if (e.id && !isUuid(e.id)) { toks.add("#" + e.id); continue; }
+    const st = short(e.type);
+    if (STRUCT.has(st) && e.label && !e.label.startsWith("(unlabeled")) {
+      const n = normLabel(e.label);
+      if (n.length > 1) toks.add(`${st}:${n}`);
+    }
+  }
+  const arr = [...toks].sort();
+  return arr.length ? `${hash(arr.join("|"))}.${arr.length}` : "empty";
+}
+
+/** Screen-level metadata for dedup + no-op detection: a fingerprint and whether
+ *  a sheet/overlay is floating over a previous screen. */
+export async function screenMeta(els: El[]): Promise<{ fp: string; overlay: boolean; n: number }> {
+  return { fp: fingerprint(els), overlay: overlay(), n: els.length };
 }
 
 export async function find(text: string): Promise<El[]> {
