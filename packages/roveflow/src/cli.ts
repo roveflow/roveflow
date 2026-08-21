@@ -116,6 +116,45 @@ program.command("swipe <x1> <y1> <x2> <y2>").description("Swipe/drag. Add --px f
   .option("--px", "pixel coords").option("--dur <ms>", "duration ms", "600").option("--look <name>", "after swiping, settle + screenshot + list the resulting screen")
   .action(async (x1, y1, x2, y2, o) => { const s = o.px ? await d.scale() : 1; await d.swipe(+x1 / s, +y1 / s, +x2 / s, +y2 / s, +o.dur); console.log("swiped"); await thenLook(o.look); });
 
+program.command("scroll [direction]").description("Reliable device-relative scroll: down (default), up, next, or previous.")
+  .option("--dur <ms>", "gesture duration ms (next/previous: 100; down/up: 300)")
+  .option("--look <name>", "after scrolling, settle + screenshot + list the resulting screen")
+  .option("--repeat", "keep scrolling until this process is interrupted")
+  .option("--every <seconds>", "seconds to wait between repeated scrolls", "20")
+  .option("--count <n>", "optional maximum number of repeated scrolls")
+  .action(async (direction = "down", o) => {
+    const dir = String(direction).toLowerCase();
+    if (!["down", "up", "next", "previous", "prev"].includes(dir)) {
+      console.error("direction must be down, up, next, or previous"); process.exit(1);
+    }
+    const { width, height } = await d.windowSize();
+    if (!width || !height) throw new Error("couldn't read the device window size");
+    // Stay clear of the status bar/home indicator while still crossing enough of
+    // the viewport to trigger snap-style feeds (Reels, Shorts, TikTok).
+    const x = width * 0.5;
+    const forward = dir === "down" || dir === "next";
+    const y1 = height * (forward ? 0.86 : 0.14);
+    const y2 = height * (forward ? 0.14 : 0.86);
+    const duration = Number(o.dur ?? (["next", "previous", "prev"].includes(dir) ? 100 : 300));
+    const scrollOnce = async (iteration?: number) => {
+      await d.swipe(x, y1, x, y2, duration);
+      console.log(`${iteration ? `[${iteration}] ` : ""}scrolled ${dir} in ${duration}ms (${Math.round(y1)} -> ${Math.round(y2)} of ${height}pt)`);
+      await thenLook(o.look);
+    };
+    if (!o.repeat) return scrollOnce();
+    if (o.look) throw new Error("--look cannot be combined with --repeat; watch the live phone stream instead");
+    const everyMs = Number(o.every) * 1000;
+    const count = o.count == null ? Infinity : Number(o.count);
+    if (!Number.isFinite(everyMs) || everyMs < 500) throw new Error("--every must be at least 0.5 seconds");
+    if (!(count === Infinity || (Number.isInteger(count) && count > 0))) throw new Error("--count must be a positive integer");
+    console.log(`continuous scroll active: ${dir} every ${everyMs / 1000}s${count === Infinity ? " until interrupted" : ` for ${count} scrolls`}`);
+    for (let i = 1; i <= count; i++) {
+      await sleep(everyMs);
+      await scrollOnce(i);
+    }
+    console.log(`continuous scroll completed after ${count} scrolls`);
+  });
+
 program.command("type <text>").description("Type into the focused field").option("--look <name>", "after typing, settle + screenshot + list")
   .action(async (t, o) => { await d.typeText(t); console.log("typed:", t); await thenLook(o.look); });
 program.command("erase <n>").description("Delete N characters").action(async (n) => { await d.eraseText(+n); console.log("erased", n); });

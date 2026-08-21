@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schema Collection"
+  short_description: "Collect mobile listings as clean Schema.org JSON-LD"
+  default_prompt: "Collect the visible listings into durable Schema.org JSON-LD with provenance and deduplication."

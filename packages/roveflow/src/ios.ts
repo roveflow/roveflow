@@ -2,8 +2,9 @@
 // Coordinates are WDA *points*; screenshots are @2x/@3x pixels — the px→pt scale is
 // derived per-device (see scale()), not assumed.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import type { El } from "./types.js";
 import { slug } from "./types.js";
 
@@ -11,6 +12,9 @@ const WDA_PORT = Number(process.env.ROVEFLOW_WDA_PORT ?? 12004);
 const BASE = `http://127.0.0.1:${WDA_PORT}`;
 let _udid: string | null = process.env.ROVEFLOW_UDID ?? null;
 let _sid: string | null = null;
+let _sessionPromise: Promise<string> | null = null;
+const SESSION_CACHE = path.join(os.tmpdir(), "roveflow-wda-session.json");
+const SCREEN_CACHE = path.join(os.tmpdir(), "roveflow-wda-screen.json");
 
 export function ios(args: string[], opts: { quiet?: boolean } = {}): string {
   try { return execFileSync("ios", args, { encoding: "utf8", stdio: ["ignore", "pipe", opts.quiet ? "ignore" : "pipe"] }); }
@@ -54,17 +58,25 @@ async function req(method: string, p: string, body?: unknown): Promise<any> {
 }
 
 async function session(): Promise<string> {
-  if (_sid) { const r = await req("GET", `/session/${_sid}/window/size`); if (r?.value?.width) return _sid; }
-  const r = await req("POST", "/session", { capabilities: { alwaysMatch: {} } });
-  _sid = r.sessionId ?? r.value?.sessionId;
-  if (!_sid) throw new Error("Could not create WDA session — run `roveflow doctor`.");
-  // Cap the accessibility-snapshot depth so /source (the element dump) stays fast.
-  // Real controls can sit deep: e.g. a segmented control's tabs at depth ~37. 40 is
-  // the measured sweet spot — it reaches those (and a little headroom) at +~300ms,
-  // just before per-step cost explodes (depth 50 was ~5x slower on a chart-heavy
-  // screen). Tunable via ROVEFLOW_SNAPSHOT_DEPTH.
-  try { await req("POST", `/session/${_sid}/appium/settings`, { settings: { snapshotMaxDepth: Number(process.env.ROVEFLOW_SNAPSHOT_DEPTH ?? 40) } }); } catch { /* best effort */ }
-  return _sid;
+  if (_sid) return _sid;
+  if (_sessionPromise) return _sessionPromise;
+  _sessionPromise = (async () => {
+    try {
+      const cached = JSON.parse(readFileSync(SESSION_CACHE, "utf8"));
+      if (cached?.sessionId && Date.now() - Number(cached.updatedAt || 0) < 12 * 60 * 60 * 1000) {
+        _sid = cached.sessionId;
+        return _sid as string;
+      }
+    } catch { /* no shared session yet */ }
+    const r = await req("POST", "/session", { capabilities: { alwaysMatch: {} } });
+    _sid = r.sessionId ?? r.value?.sessionId;
+    if (!_sid) throw new Error("Could not create WDA session — run `roveflow doctor`.");
+    try { writeFileSync(SESSION_CACHE, JSON.stringify({ sessionId: _sid, updatedAt: Date.now() })); } catch {}
+    // Cap the accessibility-snapshot depth so /source (the element dump) stays fast.
+    try { await req("POST", `/session/${_sid}/appium/settings`, { settings: { snapshotMaxDepth: Number(process.env.ROVEFLOW_SNAPSHOT_DEPTH ?? 40) } }); } catch { /* best effort */ }
+    return _sid;
+  })()
+  try { return await _sessionPromise } finally { _sessionPromise = null }
 }
 
 export async function health(): Promise<boolean> {
@@ -72,8 +84,48 @@ export async function health(): Promise<boolean> {
   try { const r = await fetch(BASE + "/status", { signal: AbortSignal.timeout(4000) }); const t = await r.text(); return r.ok && (t.includes('"build"') || t.includes('"sessionId"')); } catch { return false; }
 }
 
+function validSize(value: any): { width: number; height: number } | null {
+  const width = Number(value?.width), height = Number(value?.height);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 100 && height > 200
+    ? { width, height }
+    : null;
+}
+
+function rememberSize(value: { width: number; height: number }): { width: number; height: number } {
+  try { writeFileSync(SCREEN_CACHE, JSON.stringify({ ...value, updatedAt: Date.now() })); } catch {}
+  return value;
+}
+
+/** WDA's legacy /window/size route occasionally returns an empty value while
+ * XCTest is busy taking a snapshot. Scrolling should never fail just because
+ * that one probe did: try the modern screen route, derive points from the live
+ * screenshot, then use the last known size for this attached phone. */
 export async function windowSize(): Promise<{ width: number; height: number }> {
-  const sid = await session(); return (await req("GET", `/session/${sid}/window/size`)).value;
+  const sid = await session();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const legacy = validSize((await req("GET", `/session/${sid}/window/size`))?.value);
+    if (legacy) return rememberSize(legacy);
+  }
+  const screen = (await req("GET", `/session/${sid}/wda/screen`))?.value;
+  const modern = validSize(screen?.screenSize ?? screen);
+  if (modern) return rememberSize(modern);
+  try {
+    const b64 = (await req("GET", `/session/${sid}/screenshot`))?.value;
+    const buf = Buffer.from(b64, "base64");
+    if (buf.length > 24 && buf.toString("ascii", 12, 16) === "IHDR") {
+      const pxW = buf.readUInt32BE(16), pxH = buf.readUInt32BE(20);
+      // Current iPhones use @3x above 1000px wide and @2x below it.
+      const pixelScale = pxW >= 1000 ? 3 : 2;
+      const derived = validSize({ width: Math.round(pxW / pixelScale), height: Math.round(pxH / pixelScale) });
+      if (derived) return rememberSize(derived);
+    }
+  } catch {}
+  try {
+    const cached = JSON.parse(readFileSync(SCREEN_CACHE, "utf8"));
+    const remembered = validSize(cached);
+    if (remembered) return remembered;
+  } catch {}
+  throw new Error("couldn't read the device window size");
 }
 
 /** Native screenshot-pixels per WDA point, derived once from the live device and
@@ -85,7 +137,7 @@ export async function scale(): Promise<number> {
   if (_scale) return _scale;
   try {
     const sid = await session();
-    const sz = (await req("GET", `/session/${sid}/window/size`)).value;
+    const sz = await windowSize();
     const r = await req("GET", `/session/${sid}/screenshot`);
     const b64 = r?.value;
     let pxW = 0;

@@ -2,7 +2,7 @@
 // iOS: userspace tunnel + WebDriverAgent + port-forward (auto-signed).
 // Android: just adb — no signing, no driver to install.
 import { execSync, spawn } from "node:child_process";
-import { mkdirSync, openSync, copyFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, openSync, cpSync, existsSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -129,18 +129,21 @@ function moduleDir(): string {
   catch { return __dirname; }
 }
 
-/** Install the /rove skill globally so `/rove` is available in Claude Code. */
-function installRoveSkill(): void {
-  const src = path.join(moduleDir(), "..", "skills", "rove", "SKILL.md");
-  if (!existsSync(src)) return; // not bundled in this tree — skip
-  const dest = path.join(os.homedir(), ".claude", "skills", "rove");
-  mkdirSync(dest, { recursive: true });
-  copyFileSync(src, path.join(dest, "SKILL.md"));
+/** Install Roveflow's bundled skills globally for Claude Code. */
+function installRoveSkills(): void {
+  const root = path.join(moduleDir(), "..", "skills");
+  for (const name of ["rove", "schema-collect"]) {
+    const srcDir = path.join(root, name);
+    if (!existsSync(path.join(srcDir, "SKILL.md"))) continue;
+    const dest = path.join(os.homedir(), ".claude", "skills", name);
+    mkdirSync(dest, { recursive: true });
+    cpSync(srcDir, dest, { recursive: true });
+  }
 }
 
 export async function setup(): Promise<void> {
   console.log("Roveflow setup\n──────────────");
-  await step("install the /rove skill (~/.claude/skills/rove)", () => installRoveSkill());
+  await step("install Rove + Schema collection skills", () => installRoveSkills());
   if (!has("ffmpeg") && has("brew")) await step("install ffmpeg", () => sh("brew install ffmpeg"));
   if (!has("ios")) await step("install go-ios", () => sh("npm install -g go-ios"));
 
